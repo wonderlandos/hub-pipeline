@@ -18,10 +18,12 @@
 // hubcheck's command line (wonderlandos/hub wasm/README.md, interface I7), the one this script calls:
 //   hubcheck inspect app|plugin|extension FILE --store store.json --now UNIX [--first-seen UNIX]
 //   stdout, one line: {"verdict":"pass|flag|block|not-checked","findings":[{"rule","sentence","evidence"}],
-//                      "trust":"wolos|verified|community|withdrawn|invalid","cert"?:{"serial",...},"origin"?:{...}}
+//                      "trust":"wolos|verified|community|withdrawn|invalid","cert"?:{"serial",...},"origin"?:{...},
+//                      "file"?:{"id","version"?}}
 //   exit 0 whenever a report was printed, 1 when the file could not be read, 2 for a wrong command line.
-// The verdict is hubcheck's, unchanged: this script adds only what hubcheck cannot know (the download, the size
-// GitHub listed, the time limit) and turns every failure of the tool into not-checked.
+// The verdict is hubcheck's: this script adds only what hubcheck cannot know (the download, the size GitHub listed, the
+// time limit, whether the file's id and version are the listing's: block when not) and turns every failure of the
+// tool into not-checked.
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -74,6 +76,8 @@ export function cleanOutput(text) {
   // with the verdict (HUB-worker-2); verdicts.mjs passes them through.
   if (TRUST.includes(o.trust)) out.trust = o.trust;
   if (typeof o.cert?.serial === "string" && /^[0-9a-f]{16}$/.test(o.cert.serial)) out.cert = o.cert.serial;
+  // What the file says it is (hubcheck a0fcf58+: Info.json / plugin.toml / extension.toml); checked against the listing below.
+  if (o.file && typeof o.file.id === "string") out.file = { id: o.file.id, ...(typeof o.file.version === "string" ? { version: o.file.version } : {}) };
   return out;
 }
 
@@ -133,8 +137,18 @@ export function checkOne(r, { work, hubcheck, store, assetsDir }) {
   const res = runHubcheck(hubcheck, store, r, file, work);
   if (res.timeout) return v("not-checked", [finding("check/timeout", `The checker did not finish in ${HUBCHECK_SECS} seconds, so nothing was decided.`)], { sha256, size });
   if (res.failed || !res.out) return v("not-checked", [finding("check/tool-failed", "The checker stopped before it finished, so nothing was decided.")], { sha256, size });
-  const { trust, cert } = res.out;
-  return v(res.out.verdict, res.out.findings, { sha256, size, ...(trust ? { trust } : {}), ...(cert ? { cert } : {}) });
+  const { trust, cert, file: said } = res.out;
+  let { verdict, findings } = res.out;
+  // A file that is not the release it is listed as is never listed: another id (a release attached to someone else's
+  // listing, or a namespace the listing does not own) or another version than the tag's.
+  if (verdict !== "not-checked" && said?.id !== r.listing_id) {
+    verdict = "block";
+    findings = [finding("listing/id-mismatch", "The file inside is not the app, plugin or extension this listing is for.", `file ${said?.id ?? "(no id)"}, listing ${r.listing_id}`), ...findings];
+  } else if (verdict !== "not-checked" && said.version !== undefined && said.version !== r.version) {
+    verdict = "block";
+    findings = [finding("listing/version-mismatch", "The version inside the file is not the version of this release.", `file ${said.version}, release ${r.version}`), ...findings];
+  }
+  return v(verdict, findings.slice(0, 200), { sha256, size, ...(trust ? { trust } : {}), ...(cert ? { cert } : {}) });
 }
 
 function main() {

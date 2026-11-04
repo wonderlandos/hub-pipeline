@@ -15,6 +15,7 @@
 #
 # HUBCHECK_SRC / WOLTRUST_SRC (optional): a local git repository to clone from instead of GitHub (offline work). It
 # must contain the pinned commit; its working tree and uncommitted changes are never used (only commits are cloned).
+# WOLTRUST_SRC also serves the crates/shell submodule to hubcheck's woltrust dependency.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 name=${1:?usage: tool.sh hubcheck|woltrust}
@@ -56,6 +57,14 @@ if [ "$name" = woltrust ]; then
     git "${local[@]}" -C "$checkout" submodule update -q --init crates/shell >&2
 fi
 export CARGO_TARGET_DIR=$cache/target
+# hubcheck depends on woltrust by git (wonderlandos/wolos), whose workspace needs the crates/shell submodule too. With
+# WOLTRUST_SRC set, cargo fetches that submodule from the local checkout instead (offline work; same commit ids).
+if [ "$name" = hubcheck ] && [ -n "${WOLTRUST_SRC:-}" ] && [ -e "$WOLTRUST_SRC/crates/shell/.git" ]; then
+    shell_dir=$(cd "$WOLTRUST_SRC/crates/shell" && pwd)
+    export CARGO_NET_GIT_FETCH_WITH_CLI=true GIT_CONFIG_COUNT=2
+    export GIT_CONFIG_KEY_0=url.$shell_dir.insteadOf GIT_CONFIG_VALUE_0=https://github.com/wonderlandos/wolos-shell.git
+    export GIT_CONFIG_KEY_1=protocol.file.allow GIT_CONFIG_VALUE_1=always
+fi
 case $name in
 hubcheck) (cd "$checkout/wasm" && cargo build -q --release --locked --bin hubcheck) >&2 ;;
 woltrust) (cd "$checkout" && cargo build -q --release --locked -p woltrust --bin woltrust) >&2 ;;

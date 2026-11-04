@@ -5,7 +5,7 @@
   through a private header file, never on a command line. It is called by `scripts/publish.sh` in the `sign`
   environment only, with the secret `WOLOS_CDN_UPLOAD_TOKEN` as `UPLOAD_TOKEN`.
 - `hubcheck.rev`: the commit of `wonderlandos/hub` that `scripts/tool.sh hubcheck` builds `wasm/` `hubcheck` from
-  (`7c752c9`, HUB-wasm's native command; check workflow, test.sh).
+  (`a0fcf58`, HUB-wasm's native command; check workflow, test.sh).
 - `woltrust.rev`: the commit of `wonderlandos/wolos` that `scripts/tool.sh woltrust` builds `crates/woltrust` `woltrust` from
   (`fe64176`, branch `wave3/trust-core`; sign and ca workflows, test.sh).
 

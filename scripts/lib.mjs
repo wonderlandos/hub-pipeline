@@ -119,3 +119,10 @@ export function validate(schema, value, root = schema, path = "$", errors = []) 
   }
   return errors;
 }
+
+/** The words of tools/woltrust.features (what the pinned woltrust can do beyond fe64176). WOLTRUST_FEATURES overrides (tests). */
+export const woltrustFeatures = () => {
+  if (process.env.WOLTRUST_FEATURES !== undefined) return new Set(process.env.WOLTRUST_FEATURES.split(/[\s,]+/).filter(Boolean));
+  const file = new URL("../tools/woltrust.features", import.meta.url);
+  return new Set(readFileSync(file, "utf8").split("\n").map((l) => l.replace(/#.*/, "").trim()).filter(Boolean));
+};

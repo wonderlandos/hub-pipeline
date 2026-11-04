@@ -8,7 +8,7 @@
 //   api.mjs verdicts --in verdicts.json        POST /api/pipeline/verdicts  (check)
 //   api.mjs export   --out export.json         GET  /api/pipeline/export    (sign)
 //   api.mjs request  --id ID --out requests/ID.json   GET  /api/pipeline/requests/ID   (ca: an approved issue request)
-//   api.mjs issued   --in result.json          POST /api/pipeline/certs     (ca: {request_id, serial, cert})
+//   api.mjs issued   --in result.json          POST /api/pipeline/certs     (ca: {request_id, serial, tier, cert})
 //
 // HUB_API        base URL, default https://hub.wolos.org (https only; http://127.0.0.1 only with HUB_TEST=1)
 // HUB_TOKEN      a token to use as is (tests); otherwise one is requested from GitHub for this job
@@ -114,7 +114,8 @@ async function main() {
     if (!opts.in) die("issued needs --in", 2);
     const r = readJson(opts.in);
     if (!REQUEST_ID.test(r.request_id ?? "") || !/^[0-9a-f]{16}$/.test(r.serial ?? "") || typeof r.cert !== "string") throw new Error(`${opts.in}: not an issue result`);
-    await call("POST", "/api/pipeline/certs", { request_id: r.request_id, serial: r.serial, cert: r.cert });
+    if (!["origin", "trusted"].includes(r.tier)) throw new Error(`${opts.in}: no tier`);
+    await call("POST", "/api/pipeline/certs", { request_id: r.request_id, serial: r.serial, tier: r.tier, cert: r.cert });
     process.stdout.write(`the hub knows certificate ${r.serial} for request ${r.request_id}\n`);
   } else die("usage: api.mjs pending|verdicts|export|request|issued ...", 2);
 }

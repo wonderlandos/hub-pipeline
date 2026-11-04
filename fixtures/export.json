@@ -13,7 +13,7 @@
       "url": "https://github.com/alice/notes/releases/download/v1.0/alice.notes-1.0.wol",
       "sha256": "5aa06c671debec4f02a89582056e94a2815230778966bc9e9c4794715130627d",
       "size": 33792,
-      "trust": "verified",
+      "trust": "trusted",
       "cert": "fd51eec17572cf6c",
       "verdict": "pass",
       "findings": [],
@@ -43,7 +43,7 @@
       "url": "https://github.com/alice/weather/releases/download/v1.2/alice.weather-1.2.wolplug",
       "sha256": "41711fcd3b4a7821ceffee242406b4a0c0c013dcfa40c8f8eb6c8cc4fbd7eec5",
       "size": 32768,
-      "trust": "verified",
+      "trust": "trusted",
       "cert": "fd51eec17572cf6c",
       "verdict": "flag",
       "findings": [
@@ -86,7 +86,7 @@
       "url": "https://github.com/examplelabs/notes-sync/releases/download/v0.3/examplelabs.notes-sync-0.3.wolext",
       "sha256": "b6449c4c75e2b66f45bd8ad542a69b2b4e01c63359aa8eedad1cb02214a1deec",
       "size": 32768,
-      "trust": "verified",
+      "trust": "trusted",
       "cert": "36a3609eff7d96b1",
       "verdict": "flag",
       "findings": [

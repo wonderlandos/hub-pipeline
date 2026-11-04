@@ -19,7 +19,7 @@
         "properties": {
           "serial": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
           "at": { "type": "integer", "minimum": 1 },
-          "reason": { "enum": ["key-compromise", "abuse", "superseded", "ceased"] }
+          "reason": { "enum": ["key-compromise", "abuse", "superseded", "ceased", "withdrawn-version"], "description": "withdrawn-version: serial is a release statement's; only that version is withdrawn (written only when tools/woltrust.features has withdrawn-version)." }
         }
       }
     }

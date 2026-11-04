@@ -49,8 +49,8 @@ createServer((req, res) => {
       } catch {
         return deny(res, 400, "bad-json", "Send a JSON body.");
       }
-      if (!/^[0-9a-f]{16}$/.test(b.serial ?? "") || typeof b.cert !== "string" || typeof b.request_id !== "string") return deny(res, 400, "bad-cert", "Send request_id, serial and cert.");
-      appendFileSync(opts.received, JSON.stringify({ issued: b.request_id, serial: b.serial }) + "\n");
+      if (!/^[0-9a-f]{16}$/.test(b.serial ?? "") || typeof b.cert !== "string" || typeof b.request_id !== "string" || !["origin", "trusted"].includes(b.tier)) return deny(res, 400, "bad-cert", "Send request_id, serial and cert.");
+      appendFileSync(opts.received, JSON.stringify({ issued: b.request_id, serial: b.serial, tier: b.tier }) + "\n");
       return send(res, 200, { stored: true });
     }
     if (req.method === "POST" && url === "/api/pipeline/verdicts") {

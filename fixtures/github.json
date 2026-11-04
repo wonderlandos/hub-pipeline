@@ -53,5 +53,55 @@
         }
       ]
     }
+  },
+  "users": {
+    "1001": {
+      "id": 1001,
+      "login": "alice",
+      "name": "Alice Example",
+      "type": "User"
+    },
+    "1003": {
+      "id": 1003,
+      "login": "bob",
+      "name": "Bob Builder",
+      "type": "User"
+    },
+    "1004": {
+      "id": 1004,
+      "login": "a1ice",
+      "name": "Not Alice",
+      "type": "User"
+    },
+    "1005": {
+      "id": 1005,
+      "login": "carol",
+      "name": "Carol ‮etirovaf",
+      "type": "User"
+    },
+    "1006": {
+      "id": 1006,
+      "login": "dave",
+      "name": "Dave",
+      "type": "User"
+    }
+  },
+  "orgs": {
+    "2002": {
+      "id": 2002,
+      "login": "examplelabs",
+      "name": "Example Labs",
+      "type": "Organization"
+    }
+  },
+  "public_members": {
+    "examplelabs": [
+      "alice",
+      "bob"
+    ]
+  },
+  "memberships": {
+    "examplelabs/bob": "admin",
+    "examplelabs/alice": "member"
   }
 }

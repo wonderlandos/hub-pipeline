@@ -8,6 +8,7 @@
 #   index.json.sig      legacy Ed25519 over the exact bytes of index.json (64 raw bytes; the 0.12 reader)
 #   index.json.wsig     hybrid signature, label wolos/index/1, by the Index intermediate (serial given)
 #   revoked.json.wsig   hybrid signature, label wolos/revocation/1, by the Index intermediate
+#   statements/<id>/<version>.wsig   when <dir>/statements holds bodies: the release statements, label wolos/release/1
 #
 # Keys come from the environment of the step only, never from a file in git, never printed:
 #   WOLTRUST_BIN              the pinned woltrust (scripts/tool.sh woltrust), always: dry runs sign for real, with TEST keys
@@ -46,6 +47,12 @@ else
     keyargs=(--key-env WOLOS_INDEX_SIGNING_KEY --passphrase-env WOLOS_KEY_PASSPHRASE)
     roots=${SIGN_ROOTS:-$here/../certs/roots} intermediates=${SIGN_INTERMEDIATES:-$here/../certs/intermediates}
     verify_test=()
+fi
+
+# Release statements (statements.mjs), when build-index.mjs wrote their bodies: signed first: an index that points at
+# statements is not signed at all when they cannot be.
+if [ -d "$dir/statements" ]; then
+    node "$here/statements.mjs" sign --dir "$dir/statements" --cert "$serial" "${keyargs[@]}"
 fi
 
 # Legacy Ed25519, raw 64 bytes, over the bytes as they are.

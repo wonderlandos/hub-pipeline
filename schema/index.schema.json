@@ -61,8 +61,8 @@
         "url": { "$ref": "#/$defs/assetUrl" },
         "sha256": { "$ref": "#/$defs/sha256", "description": "Of the release asset, pinned at the first check. A different file at the same URL is refused." },
         "size": { "type": "integer", "minimum": 1, "maximum": 1073741824 },
-        "trust": { "enum": ["wolos", "verified", "community"] },
-        "cert": { "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "Serial of the leaf certificate that signed the file (trust wolos or verified), from hubcheck's report through the Worker's export." },
+        "trust": { "enum": ["wolos", "trusted", "origin", "community"], "description": "trusted: signed with a trusted certificate (an admin approved the developer or organisation); origin: signed with an origin certificate (who made it and from which repository, issued once the CLA is accepted), or with a trusted one that was revoked as superseded; community: no certificate the hub counts." },
+        "cert": { "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "Serial of the leaf certificate that signed the file (trust wolos, trusted or origin), from hubcheck's report through the Worker's export." },
         "verdict": { "enum": ["pass", "flag"], "description": "block and not-checked releases are never listed." },
         "findings": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/finding" } },
         "owner": {
@@ -86,6 +86,15 @@
         },
         "first_seen": { "type": "integer", "minimum": 1 },
         "yanked": { "type": "boolean" },
+        "withdrawn": { "const": true, "description": "This version was withdrawn by the hub: its release statement is on the revocation list (reason withdrawn-version). Shown, never installed; the author's certificate is untouched." },
+        "statement": {
+          "type": "object", "additionalProperties": false, "required": ["url", "serial"],
+          "description": "The signed release statement of this version (label wolos/release/1, by the Index intermediate).",
+          "properties": {
+            "url": { "type": "string", "maxLength": 512, "pattern": "^https://[^\\s/]+/\\S+\\.wsig$" },
+            "serial": { "type": "string", "pattern": "^[0-9a-f]{16}$" }
+          }
+        },
         "kinds": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Plugins only; today's field, read by 0.12. From the plugin.toml sections, through the Worker's export." },
         "permissions": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Plugins only (an extension.toml has none); today's field, shown before Install. From plugin.toml, through the Worker's export." },
         "min_wolos": { "type": "string", "pattern": "^([0-9]{1,4}\\.[0-9]{1,4}(\\.[0-9]{1,4})?)?$", "description": "From the manifest, through the Worker's export; a signed file needs 0.13." },

@@ -1,0 +1,6 @@
+# What the woltrust of tools/woltrust.rev can do beyond fe64176, one word per line (TRUST-core-4, chat 7293):
+#   class            certificate bodies carry "class":"origin"|"trusted" and a trusted one "origin_cert"
+#   statements       `woltrust sign --purpose release` (label wolos/release/1): signed release statements
+#   withdrawn-version revocation entries with reason withdrawn-version (by statement serial)
+# fe64176 has none of them: the scripts keep the plumbing ready and leave these out of what they sign and publish.
+# Add a word here in the same commit that moves woltrust.rev to a commit that has it.

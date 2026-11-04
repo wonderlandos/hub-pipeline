@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Rewrites the binary fixtures of this repository (fixtures/assets/*, fixtures/trust/, fixtures/request-issue.json) from
+# Rewrites the binary fixtures of this repository (fixtures/assets/*, fixtures/trust/, fixtures/request-{issue,origin,org}.json) from
 # the TEST authority of woltrust, at the commit of tools/woltrust.rev. Not part of any workflow; run it when a fixture
 # has to change, then `SAMPLE_OUT=fixtures/sample-signed scripts/test.sh`.
 #
