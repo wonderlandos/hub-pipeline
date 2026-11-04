@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "action": "revoke",
+  "serial": "b0b00000000000ad",
+  "reason": "key-compromise",
+  "approved_by": [
+    "carol-ca"
+  ],
+  "note": "Bob reported the laptop lost",
+  "at": 1793600000
+}

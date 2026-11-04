@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# ca: issue or revoke one author certificate from a request file under requests/ (ADR 0046). Manual only.
+#
+# Environment "ca" must be set up with REQUIRED REVIEWERS (a second person approves every run, GitHub holds the run until
+# then) and "deployment branches: main". It holds (names only):
+#   secret  WOLOS_AUTHORS_CA_KEY   the Authors CA intermediate's key material, for woltrust
+#   var     AUTHORS_CA_SERIAL      serial of the Authors CA certificate (16 hex)
+#
+# dry_run (the default) uses a throw-away TEST CA (stand-in woltrust, test key): the certificate or revocation is made in a
+# scratch folder, shown in the log and kept as an artifact marked test; nothing in the repository changes.
+# A real run writes certs/<serial>.wolcert or appends to revocations.json, moves the request to requests/done/, commits,
+# and starts a real sign run so a revocation is published at once.
+name: ca
+
+on:
+  workflow_dispatch:
+    inputs:
+      request:
+        description: "Request file, e.g. requests/alice-2026-11.json"
+        type: string
+        required: true
+      dry_run:
+        description: "Dry run with the test CA (default)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: hub-index-ca
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  ca:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ca
+    permissions:
+      contents: write   # certs/, revocations.json, requests/done/
+      actions: write    # to start sign.yml after a revocation
+    env:
+      REQUEST: ${{ inputs.request }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Check the request
+        run: |
+          # The input is data, never code: it reaches the shell only through the environment.
+          [[ "$REQUEST" =~ ^requests/[A-Za-z0-9._-]+\.json$ ]] || { echo "the request must be a file directly under requests/"; exit 1; }
+          if [ ! -f "$REQUEST" ] || [ -L "$REQUEST" ]; then echo "$REQUEST is not a plain file"; exit 1; fi
+          node scripts/validate.mjs request "$REQUEST"
+          echo "ACTION=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.REQUEST)).action')" >> "$GITHUB_ENV"
+
+      - name: Build woltrust (pinned)
+        if: env.DRY_RUN != '1'
+        id: woltrust
+        run: |
+          # TODO(ADR 0046): tools/woltrust.rev is "unpinned" until the woltrust crate has its command line; a real run stops here.
+          echo "bin=$(scripts/tool.sh woltrust)" >> "$GITHUB_OUTPUT"
+
+      - name: Dry run with the test CA
+        if: env.DRY_RUN == '1'
+        run: |
+          work="$RUNNER_TEMP/ca-dry"
+          mkdir -p "$work"
+          cp revocations.json "$work/revocations.json" 2>/dev/null || echo '{"format":1,"entries":[]}' > "$work/revocations.json"
+          mkdir -p "$work/certs"
+          cp certs/*.wolcert "$work/certs/" 2>/dev/null || true
+          if [ "$ACTION" = issue ]; then
+            node scripts/ca.mjs issue --request "$REQUEST" --certs "$work/certs" --issuer-serial 7e57ca0000000001 \
+              --source "$work/revocations.json" --woltrust "node scripts/woltrust-stub.mjs"
+          else
+            node scripts/ca.mjs revoke --request "$REQUEST" --certs "$work/certs" --source "$work/revocations.json"
+          fi
+          echo "TEST ONLY: nothing was written to the repository" >> "$work/TEST-ONLY.txt"
+
+      - name: Issue or revoke
+        if: env.DRY_RUN != '1'
+        env:
+          WOLOS_AUTHORS_CA_KEY: ${{ secrets.WOLOS_AUTHORS_CA_KEY }}
+          CA_SERIAL: ${{ vars.AUTHORS_CA_SERIAL }}
+          WOLTRUST: ${{ steps.woltrust.outputs.bin }}
+        run: |
+          if [ "$ACTION" = issue ]; then
+            node scripts/ca.mjs issue --request "$REQUEST" --certs certs --issuer-serial "${CA_SERIAL:?AUTHORS_CA_SERIAL is not set}" \
+              --source revocations.json --key-env WOLOS_AUTHORS_CA_KEY --archive
+          else
+            node scripts/ca.mjs revoke --request "$REQUEST" --certs certs --source revocations.json --archive
+          fi
+
+      - name: Commit
+        if: env.DRY_RUN != '1'
+        run: |
+          scripts/commit-log.sh "ca: $ACTION $(basename "$REQUEST" .json)" certs revocations.json requests
+
+      - name: Publish a revocation now
+        if: env.DRY_RUN != '1' && env.ACTION == 'revoke'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run sign.yml --ref main -f dry_run=false
+
+      - name: Keep the dry run
+        if: always() && env.DRY_RUN == '1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ca-dry-run-TEST-ONLY
+          path: ${{ runner.temp }}/ca-dry
+          if-no-files-found: ignore
+          retention-days: 3

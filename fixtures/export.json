@@ -1,0 +1,107 @@
+{
+  "format": 1,
+  "preview": false,
+  "generated": 1793750400,
+  "apps": [
+    {
+      "id": "alice.notes",
+      "name": "Notes",
+      "version": "1.0",
+      "summary": "Quick notes that stay on your computer",
+      "author": "alice",
+      "license": "MIT",
+      "url": "https://github.com/alice/notes/releases/download/v1.0/alice.notes-1.0.wol",
+      "sha256": "70c7293b393fa59299ba6816d1187c7da3e12fa36d71b9fbc1f3f26e017578c0",
+      "size": 32,
+      "trust": "verified",
+      "cert": "a11ce00000000001",
+      "verdict": "pass",
+      "findings": [],
+      "owner": {
+        "kind": "person",
+        "github_id": 1001,
+        "login": "alice"
+      },
+      "source": {
+        "repo": "alice/notes",
+        "repo_id": 5001,
+        "tag": "v1.0",
+        "commit": "1111111111111111111111111111111111111111"
+      },
+      "first_seen": 1793700000,
+      "yanked": false
+    }
+  ],
+  "plugins": [
+    {
+      "id": "alice.weather",
+      "name": "Weather",
+      "version": "1.2",
+      "summary": "Forecast in the menu bar",
+      "author": "alice",
+      "license": "MIT",
+      "url": "https://github.com/alice/weather/releases/download/v1.2/alice.weather-1.2.wolplug",
+      "sha256": "003aff0c0642b399637f2d6a047821e034d236037a41e2bf8f1f6d413a0a6f67",
+      "size": 41,
+      "trust": "community",
+      "verdict": "pass",
+      "findings": [],
+      "owner": {
+        "kind": "person",
+        "github_id": 1001,
+        "login": "alice"
+      },
+      "source": {
+        "repo": "alice/weather",
+        "repo_id": 5002,
+        "tag": "v1.2",
+        "commit": "2222222222222222222222222222222222222222"
+      },
+      "first_seen": 1793710000,
+      "yanked": false,
+      "kinds": [
+        "menubar"
+      ],
+      "permissions": [
+        "http"
+      ],
+      "min_wolos": "0.12"
+    }
+  ],
+  "extensions": [
+    {
+      "id": "examplelabs.notes-sync",
+      "name": "Notes Sync",
+      "version": "0.3",
+      "summary": "Sync Notes with a folder you choose",
+      "author": "examplelabs",
+      "license": "Apache-2.0",
+      "url": "https://github.com/examplelabs/notes-sync/releases/download/v0.3/examplelabs.notes-sync-0.3.wolext",
+      "sha256": "eb9a0bdaa9215c9d399590f4bb37bbde5f19f66e719bb3646327b4d8700fa067",
+      "size": 75,
+      "trust": "community",
+      "verdict": "flag",
+      "findings": [
+        {
+          "rule": "permissions/more",
+          "sentence": "Asks for more than the last version: it can now read the files you choose.",
+          "evidence": "files.read added"
+        }
+      ],
+      "owner": {
+        "kind": "org",
+        "github_id": 2002,
+        "login": "examplelabs"
+      },
+      "source": {
+        "repo": "examplelabs/notes-sync",
+        "repo_id": 5003,
+        "tag": "v0.3",
+        "commit": "3333333333333333333333333333333333333333"
+      },
+      "first_seen": 1793720000,
+      "yanked": false,
+      "host": "alice.notes"
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "repos": {
+    "5001": {
+      "full_name": "alice/notes",
+      "private": false,
+      "owner": {
+        "id": 1001
+      }
+    },
+    "5002": {
+      "full_name": "alice/weather",
+      "private": false,
+      "owner": {
+        "id": 1001
+      }
+    },
+    "5003": {
+      "full_name": "examplelabs/notes-sync",
+      "private": false,
+      "owner": {
+        "id": 2002
+      }
+    }
+  },
+  "releases": {
+    "alice/notes@v1.0": {
+      "draft": false,
+      "assets": [
+        {
+          "name": "alice.notes-1.0.wol",
+          "size": 32,
+          "browser_download_url": "https://github.com/alice/notes/releases/download/v1.0/alice.notes-1.0.wol"
+        }
+      ]
+    },
+    "alice/weather@v1.2": {
+      "draft": false,
+      "assets": [
+        {
+          "name": "alice.weather-1.2.wolplug",
+          "size": 41,
+          "browser_download_url": "https://github.com/alice/weather/releases/download/v1.2/alice.weather-1.2.wolplug"
+        }
+      ]
+    },
+    "examplelabs/notes-sync@v0.3": {
+      "draft": false,
+      "assets": [
+        {
+          "name": "examplelabs.notes-sync-0.3.wolext",
+          "size": 75,
+          "browser_download_url": "https://github.com/examplelabs/notes-sync/releases/download/v0.3/examplelabs.notes-sync-0.3.wolext"
+        }
+      ]
+    }
+  }
+}

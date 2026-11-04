@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wonderlandos/hub-index/blob/main/schema/request.schema.json",
+  "title": "Certificate request file (requests/<name>.json) read by the ca workflow",
+  "description": "One file, one action. The hub Worker's own request format (POST /api/certs/requests, phase 2) is converted to this by the CA operator. A revoke for reason abuse needs two distinct approvers (ADR 0046).",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "action",
+        "kind",
+        "subject",
+        "namespaces",
+        "keys",
+        "proof",
+        "requested_at"
+      ],
+      "properties": {
+        "format": {
+          "const": 1
+        },
+        "action": {
+          "const": "issue"
+        },
+        "kind": {
+          "enum": [
+            "person",
+            "org"
+          ]
+        },
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "github_id",
+            "login",
+            "name"
+          ],
+          "properties": {
+            "github_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "login": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$",
+              "maxLength": 39
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          }
+        },
+        "namespaces": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9_-]+(\\.[a-z0-9_-]+)*\\.$"
+          }
+        },
+        "keys": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ed25519",
+            "ml-dsa-65"
+          ],
+          "properties": {
+            "ed25519": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            "ml-dsa-65": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{2000,2800}$"
+            }
+          }
+        },
+        "level": {
+          "enum": [
+            "verified"
+          ]
+        },
+        "months": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24
+        },
+        "requested_at": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "proof": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ed25519",
+            "second"
+          ],
+          "description": "Proof of possession of both private keys over the request (checked by the Worker with hubcheck, and again by `woltrust issue --proof`).",
+          "properties": {
+            "ed25519": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{86}$"
+            },
+            "second": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{100,6000}$"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "action",
+        "serial",
+        "reason",
+        "approved_by"
+      ],
+      "properties": {
+        "format": {
+          "const": 1
+        },
+        "action": {
+          "const": "revoke"
+        },
+        "serial": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "reason": {
+          "enum": [
+            "key-compromise",
+            "abuse",
+            "superseded",
+            "ceased"
+          ]
+        },
+        "approved_by": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$"
+          }
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "at": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  ]
+}
