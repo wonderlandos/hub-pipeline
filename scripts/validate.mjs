@@ -67,6 +67,7 @@ export function checkIndex(index, { now, bytes, revoked } = {}) {
       warnings.push(`${at}: the repository owner differs from the owner login (renamed or transferred; the sign job re-checks the numeric ids)`);
     }
     if (e.trust === "community" && e.cert) errors.push(`${at}: a community entry has no certificate`);
+    if (e.trust === "origin" && !e.cert) errors.push(`${at}: an origin entry names its certificate`);
     if (e.trust !== "community" && !e.cert) warnings.push(`${at}: trust ${e.trust} without the signing certificate serial (the Worker export does not carry it yet)`);
     if (e.verdict === "flag" && e.findings.length === 0) errors.push(`${at}: a flagged entry lists its findings`);
     if (kind === "extension" && !appIds.has(e.host)) warnings.push(`${at}: its host ${e.host} is not an app in this index`);
@@ -97,6 +98,15 @@ export function checkRevoked(list) {
   return errors;
 }
 
+/** Prefixes nobody gets (WolOS, infrastructure, test names); compared by skeleton. */
+export const RESERVED_NAMES = ["wolos", "org", "test", "example", "localhost", "root", "admin", "system", "hub", "official", "security"];
+
+/** A coarse confusable skeleton of an ASCII login or prefix: lowercase, separators gone, look-alike digits and pairs folded. */
+export const skeleton = (s) => s.toLowerCase().replace(/\.$/, "").replace(/[-_.]/g, "").replace(/rn/g, "m").replace(/vv/g, "w").replace(/0/g, "o").replace(/[1i|]/g, "l").replace(/5/g, "s");
+
+/** The reserved name `login` is or looks like, else null. */
+export const reservedName = (login) => RESERVED_NAMES.find((r) => skeleton(login) === skeleton(r)) ?? null;
+
 export function checkRequest(req) {
   // Pick the shape by `action` first, so the errors name the field that is wrong, not "matches 0 shapes".
   const all = schema("request");
@@ -110,11 +120,22 @@ export function checkRequest(req) {
   } else {
     const login = req.subject.login.toLowerCase();
     if (req.namespaces.some((n) => n.startsWith("org.wolos") || n === "org.")) errors.push("org.wolos. belongs to the Packages CA only");
-    if (req.kind === "person" && !req.namespaces.includes(`${login}.`)) errors.push(`a person's namespaces include "${login}."`);
+    // audit-1 H2: exactly the account's own prefix, for a person and an organisation alike (the CA derives it again from
+    // what GitHub says the login of github_id is; a request that asks for more or other is refused, never trimmed).
+    if (req.namespaces.length !== 1 || req.namespaces[0] !== `${login}.`) errors.push(`namespaces must be exactly ["${login}."] (the ${req.kind === "org" ? "organisation's" : "person's"} own login)`);
+    const reserved = reservedName(login);
+    if (reserved) errors.push(`the login ${login} is reserved or looks like "${reserved}"`);
+    if (req.kind === "org" && !req.requested_by) errors.push("an organisation's request names requested_by (an owner of the organisation, checked against GitHub)");
+    if (req.kind === "person" && req.requested_by && req.requested_by.github_id !== req.subject.github_id) errors.push("requested_by: a person requests for themselves");
     if (Boolean(req.keys.x25519) !== Boolean(req.keys["ml-kem-768"])) errors.push("keys: x25519 and ml-kem-768 come both or not at all");
     if (req.subject.org && req.kind !== "person") errors.push("subject.org: only a person names an organisation");
-    if (req.approved_by.some((a) => a.toLowerCase() === login)) errors.push("approved_by: nobody approves their own certificate");
-    if (req.approved_at < req.requested_at) errors.push("approved_at is before requested_at");
+    if (req.tier === "trusted") {
+      if (!req.approved_by || !req.approved_at) errors.push("a trusted certificate needs approved_by and approved_at (an admin's approval)");
+      else {
+        if (req.approved_by.some((a) => a.toLowerCase() === login)) errors.push("approved_by: nobody approves their own certificate");
+        if (req.approved_at < req.requested_at) errors.push("approved_at is before requested_at");
+      }
+    } else if (req.cla_accepted_at == null) errors.push("an origin certificate needs cla_accepted_at (the CLA accepted)");
   }
   return errors;
 }

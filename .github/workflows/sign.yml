@@ -94,9 +94,11 @@ jobs:
           [ -f revocations.json ] || echo '{"format":1,"entries":[]}' > revocations.json
           node scripts/build-revoked.mjs --source revocations.json --previous signed/revoked.json --out work/out/revoked.json
           force=; [ "$FORCE" = 1 ] && force=--force
+          # Release statements once the pinned woltrust signs them (tools/woltrust.features: statements).
+          statements=; grep -qx statements <(sed 's/#.*//; s/ //g' tools/woltrust.features) && statements="--statements work/out/statements --statements-url https://cdn.wolos.org/plugins/statements"
           node scripts/build-index.mjs --export work/export.checked.json --revoked work/out/revoked.json \
             --revoked-url "https://cdn.wolos.org/plugins/revoked.json" --previous signed/index.json \
-            --intermediates certs/intermediates --out work/out/index.json $force
+            --intermediates certs/intermediates --certs certs --revocations revocations.json $statements --out work/out/index.json $force
           node scripts/validate.mjs index work/out/index.json --revoked work/out/revoked.json
           node scripts/validate.mjs revoked work/out/revoked.json
 
@@ -132,6 +134,7 @@ jobs:
         run: |
           mkdir -p signed
           cp work/out/index.json work/out/index.json.sig work/out/index.json.wsig work/out/revoked.json work/out/revoked.json.wsig signed/
+          if [ -d work/out/statements ]; then (cd work/out && find statements -name '*.wsig' -exec install -D -m 644 {} ../../signed/{} \;); fi
           serial=$(node -p 'require("./signed/index.json").serial')
           counts=$(node -p 'const i=require("./signed/index.json");i.apps.length+" apps, "+i.plugins.length+" plugins, "+i.extensions.length+" extensions"')
           scripts/commit-log.sh "index $serial: $counts; revoked $(node -p 'require("./signed/revoked.json").serial')" signed

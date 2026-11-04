@@ -9,8 +9,9 @@
 //!   from the Worker's, so it never reaches the checker.
 //! - `trust/roots/test-root-a.wolcert`, `trust/intermediates/test-{index,authors}.wolcert`: the TEST authority
 //!   of woltrust (subject labels `test-...`, refused by every store unless `allow_test`).
-//! - `request-issue.json`: an issue request with real keys (signing and encryption) and a real proof of
-//!   possession, as the hub Worker writes it after an admin approved it.
+//! - `request-issue.json` (tier trusted, approved by an admin), `request-origin.json` (tier origin, CLA accepted) and
+//!   `request-org.json` (organisation examplelabs, origin, asked by its owner bob):
+//!   issue requests with real keys (signing and encryption) and a real proof of possession, as the hub Worker writes them.
 //!
 //! Deterministic: the seeds are public names (`woltrust::pki::seed`), the tar headers fixed.
 use sha2::{Digest, Sha256};
@@ -95,6 +96,50 @@ fn folder(id: &str, files: &[(&str, &[u8])], signer: Option<(&Ident, &Ident)>, p
     pack(&members, signer, purpose)
 }
 
+/// A request for alice with the key material of the public name `seed`, of `tier`.
+fn request(seed: &str, id: &str, tier: &str) -> Vec<u8> {
+    let km = woltrust::key::KeyMaterial::new(woltrust::pki::seed(seed), false);
+    let keys = km.keys_text();
+    let org = seed.ends_with("-org");
+    let (gid, kind) = if org { (2002, woltrust::cert::Kind::Org) } else { (1001, woltrust::cert::Kind::Person) };
+    let proof = woltrust::request::prove(&km.secret(), gid, kind, &keys);
+    let mut k = serde_json::Map::new();
+    k.insert("ed25519".into(), keys.ed25519.clone().into());
+    k.insert("ml-dsa-65".into(), keys.ml_dsa_65.clone().expect("ml-dsa").into());
+    k.insert("x25519".into(), keys.x25519.clone().expect("x25519").into());
+    k.insert("ml-kem-768".into(), keys.ml_kem_768.clone().expect("ml-kem").into());
+    let mut req = serde_json::json!({
+        "format": 1,
+        "action": "issue",
+        "id": id,
+        "kind": "person",
+        "tier": tier,
+        "subject": { "github_id": 1001, "login": "alice", "name": "Alice Example", "org": { "github_id": 2002, "login": "examplelabs" } },
+        "namespaces": ["alice."],
+        "keys": k,
+        "proof": { "ed25519": proof.ed25519, "second": proof.second },
+        "months": 12,
+        "requested_at": 1793700000u64,
+        "verified_at": 1793710000u64
+    });
+    let o = req.as_object_mut().expect("object");
+    if org {
+        o.insert("kind".into(), serde_json::json!("org"));
+        o.insert("subject".into(), serde_json::json!({ "github_id": 2002, "login": "examplelabs", "name": "Example Labs" }));
+        o.insert("namespaces".into(), serde_json::json!(["examplelabs."]));
+        o.insert("requested_by".into(), serde_json::json!({ "github_id": 1003, "login": "bob" }));
+    }
+    if tier == "trusted" {
+        o.insert("approved_by".into(), serde_json::json!(["carol-ca"]));
+        o.insert("approved_at".into(), serde_json::json!(1793740000u64));
+    } else {
+        o.insert("cla_accepted_at".into(), serde_json::json!(1793690000u64));
+    }
+    let mut text = serde_json::to_string_pretty(&req).expect("json");
+    text.push('\n');
+    text.into_bytes()
+}
+
 fn main() {
     let out = std::env::args().nth(1).expect("usage: hub-index-fixtures <fixtures dir>");
     let dir = Path::new(&out);
@@ -123,31 +168,10 @@ fn main() {
     write(dir, "trust/intermediates/test-index.wolcert", &pki.index.file);
     write(dir, "trust/intermediates/test-authors.wolcert", &pki.authors.file);
 
-    // An issue request with real keys and proof (person alice, GitHub id 1001), approved in the admin panel.
-    let km = woltrust::key::KeyMaterial::new(woltrust::pki::seed("hub-index-request-alice"), false);
-    let keys = km.keys_text();
-    let proof = woltrust::request::prove(&km.secret(), 1001, woltrust::cert::Kind::Person, &keys);
-    let mut k = serde_json::Map::new();
-    k.insert("ed25519".into(), keys.ed25519.clone().into());
-    k.insert("ml-dsa-65".into(), keys.ml_dsa_65.clone().expect("ml-dsa").into());
-    k.insert("x25519".into(), keys.x25519.clone().expect("x25519").into());
-    k.insert("ml-kem-768".into(), keys.ml_kem_768.clone().expect("ml-kem").into());
-    let req = serde_json::json!({
-        "format": 1,
-        "action": "issue",
-        "id": "r-0001",
-        "kind": "person",
-        "subject": { "github_id": 1001, "login": "alice", "name": "Alice Example", "org": { "github_id": 2002, "login": "examplelabs" } },
-        "namespaces": ["alice."],
-        "keys": k,
-        "proof": { "ed25519": proof.ed25519, "second": proof.second },
-        "months": 12,
-        "requested_at": 1793700000u64,
-        "verified_at": 1793710000u64,
-        "approved_by": ["carol-ca"],
-        "approved_at": 1793740000u64
-    });
-    let mut text = serde_json::to_string_pretty(&req).expect("json");
-    text.push('\n');
-    write(dir, "request-issue.json", text.as_bytes());
+    // Issue requests with real keys and proof (person alice, GitHub id 1001), as the Worker writes them: a trusted one
+    // an admin approved, and an origin one issued on the CLA alone (lead decision 2026-11-04: two tiers).
+    write(dir, "request-issue.json", &request("hub-index-request-alice", "r-0001", "trusted"));
+    write(dir, "request-origin.json", &request("hub-index-request-alice-origin", "r-0002", "origin"));
+    // An organisation's origin request, asked by bob (an owner of examplelabs in fixtures/github.json).
+    write(dir, "request-org.json", &request("hub-index-request-examplelabs-org", "r-0003", "origin"));
 }

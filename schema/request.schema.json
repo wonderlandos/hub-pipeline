@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/wonderlandos/hub-index/blob/main/schema/request.schema.json",
   "title": "Certificate request file (requests/<name>.json) read by the ca workflow",
-  "description": "One file, one action. An issue request is written by the hub Worker when an admin approves a certificate request in the admin panel (approved_by, approved_at; the ca workflow fetches it by its id, see README \"How a certificate is issued\"), or by the CA operator by hand. woltrust's `wol cert request` makes the part from format to requested_at (woltrust::request::Request); the Worker adds id, subject.org, verified_at and the approval. A revoke for reason abuse needs two distinct approvers (ADR 0046).",
+  "description": "One file, one action. An issue request is written by the hub Worker when an admin approves a certificate request in the admin panel (approved_by, approved_at; the ca workflow fetches it by its id, see README \"How a certificate is issued\"), or by the CA operator by hand. woltrust's `wol cert request` makes the part from format to requested_at (woltrust::request::Request); the Worker adds id, subject.org, verified_at and the approval. An origin request needs cla_accepted_at and no approval; a trusted one needs approved_by and approved_at. A revoke for reason abuse needs two distinct approvers (ADR 0046).",
   "oneOf": [
     {
       "type": "object",
@@ -16,8 +16,7 @@
         "keys",
         "proof",
         "requested_at",
-        "approved_by",
-        "approved_at"
+        "tier"
       ],
       "properties": {
         "format": {
@@ -36,6 +35,13 @@
             "person",
             "org"
           ]
+        },
+        "tier": {
+          "enum": [
+            "origin",
+            "trusted"
+          ],
+          "description": "Which certificate (lead decision 2026-11-04): origin = issued automatically once the CLA is accepted (cla_accepted_at; says who made a file and from which repository); trusted = a vetted developer or organisation, issued only with approved_by in CA_APPROVERS. A person or organisation may hold one active certificate of each tier. Named tier because kind (person|org) is covered by the proof."
         },
         "subject": {
           "type": "object",
@@ -80,6 +86,27 @@
                 }
               }
             }
+          },
+          "description": "As the requester stated it. The certificate takes login and name from GitHub (by github_id) and org only when GitHub shows the membership publicly; a login that differs from GitHub's is refused."
+        },
+        "requested_by": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "github_id",
+            "login"
+          ],
+          "description": "Who asked (the Worker's session). Organisation requests: must be an owner (admin) of the organisation, which the ca job checks with GitHub itself.",
+          "properties": {
+            "github_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "login": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$",
+              "maxLength": 39
+            }
           }
         },
         "namespaces": {
@@ -89,7 +116,8 @@
           "items": {
             "type": "string",
             "pattern": "^[a-z0-9_-]+(\\.[a-z0-9_-]+)*\\.$"
-          }
+          },
+          "description": "Exactly the account's own prefix [\"<login>.\"] (lowercase). The certificate gets the prefix derived from the login GitHub gives for github_id."
         },
         "keys": {
           "type": "object",
@@ -165,12 +193,17 @@
             "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$",
             "maxLength": 39
           },
-          "description": "GitHub logins of the hub admins who approved (never the subject)."
+          "description": "GitHub logins of the hub admins who approved (never the subject); required for tier trusted."
         },
         "approved_at": {
           "type": "integer",
           "minimum": 1,
           "description": "When the admin approved."
+        },
+        "cla_accepted_at": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "When the subject accepted the CLA (the Worker's record); required for tier origin."
         }
       }
     },
@@ -193,14 +226,16 @@
         },
         "serial": {
           "type": "string",
-          "pattern": "^[0-9a-f]{16}$"
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "A certificate serial, or for reason withdrawn-version the statement serial of one listed version (index entry statement.serial)."
         },
         "reason": {
           "enum": [
             "key-compromise",
             "abuse",
             "superseded",
-            "ceased"
+            "ceased",
+            "withdrawn-version"
           ]
         },
         "approved_by": {
@@ -220,7 +255,8 @@
         },
         "at": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "description": "Ignored: the ca job uses its own clock for the revocation time (audit-1 M4)."
         }
       }
     }

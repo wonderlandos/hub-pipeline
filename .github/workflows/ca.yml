@@ -1,17 +1,21 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # ca: issue or revoke one author certificate (ADR 0046).
 #
-# Issuing is automatic once an admin approves (lead rule): the admin presses Approve in the hub admin panel, the Worker
-# records approved_by/approved_at on the request and starts this workflow through the GitHub API
-# (POST /repos/wonderlandos/hub-index/actions/workflows/ca.yml/dispatches, inputs {request_id, dry_run: "false"}, with
-# the hub GitHub App's installation token, permission actions:write and nothing else on this repository). The job
+# Two tiers of certificate (lead decision 2026-11-04), both issued without anyone clicking in GitHub:
+#   origin   says who made a file and from which repository; the Worker starts this workflow as soon as the person or
+#            organisation has accepted the CLA (request field cla_accepted_at), with no approval.
+#   trusted  a vetted developer or organisation; the Worker starts it when an admin presses Approve in the admin panel
+#            (approved_by/approved_at), and only logins in CA_APPROVERS count.
+# The Worker calls the GitHub API (POST /repos/wonderlandos/hub-index/actions/workflows/ca.yml/dispatches, inputs
+# {request_id, dry_run: "false"}) with the hub GitHub App's installation token (actions:write, nothing else here). The job
 # fetches the request from the Worker with its OIDC token (GET /api/pipeline/requests/<id>), writes it to
-# requests/<id>.json, has woltrust check the proof and sign, commits certs/<serial>.wolcert and requests/done/<id>.json,
-# and tells the Worker the serial (POST /api/pipeline/certs). README, "How a certificate is issued".
+# requests/<id>.json, has woltrust check the proof and sign, commits certs/<serial>.wolcert, certs/<serial>.json (the tier)
+# and requests/done/<id>.json, and tells the Worker the serial (POST /api/pipeline/certs). README, "How a certificate is
+# issued". Revoking a trusted certificate as superseded downgrades: the index shows its files as origin.
 # A request file the CA operator committed (reviewed into main like any change) is issued with input `request`.
 #
-# Environment "ca": deployment branch main only. No required reviewers: the second person is the admin whose
-# approval is in the request (approved_by), and only logins in the variable CA_APPROVERS count. It holds (names only):
+# Environment "ca": deployment branch main only. No required reviewers: an origin certificate needs none (the CLA is the
+# condition), and for a trusted one the second person is the admin whose approval is in the request (approved_by). It holds (names only):
 #   secret  WOLOS_AUTHORS_CA_KEY   the Authors CA intermediate's key material (plain or a locked .wolkey)
 #   secret  WOLOS_KEY_PASSPHRASE   the passphrase of a locked .wolkey (woltrust --passphrase-env)
 #   var     AUTHORS_CA_SERIAL      serial of the Authors CA certificate (16 hex; its .wolcert is in certs/intermediates/)
@@ -58,12 +62,19 @@ jobs:
       REQUEST_ID: ${{ inputs.request_id }}
       DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
       CA_APPROVERS: ${{ vars.CA_APPROVERS }}
+      # Read-only GitHub lookups of the signed github_id (login, name, public org membership, org owner): audit-1 H2.
+      # CA_GITHUB_TOKEN (optional secret, members:read on the organisations) lets the job see an owner role in an
+      # organisation; without it an organisation certificate is refused (the job cannot confirm the owner).
+      GITHUB_TOKEN: ${{ github.token }}
+      CA_GITHUB_TOKEN: ${{ secrets.CA_GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Get the request
         run: |
-          # The inputs are data, never code: they reach the shell only through the environment.
+          # The inputs are data, never code: they reach the shell only through the environment. From a dispatch only
+          # request_id is used, as an id: the request itself comes from the Worker over OIDC and is checked again here
+          # (its id must be this one), and what is signed comes from the requester's proof and from GitHub (ca.mjs).
           if [ -n "$REQUEST_ID" ]; then
             [ -z "$REQUEST" ] || { echo "give request or request_id, not both"; exit 1; }
             [[ "$REQUEST_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] || { echo "not a request id"; exit 1; }
@@ -95,12 +106,14 @@ jobs:
           cp certs/*.wolcert "$work/certs/" 2>/dev/null || true
           if [ "$ACTION" = issue ]; then
             node scripts/test-keys.mjs "$work/keys"
-            approvers=(); [ -z "$CA_APPROVERS" ] || approvers=(--approvers "$CA_APPROVERS")
+            # TEST: without CA_APPROVERS the request's own approvers stand in (only the TEST CA signs here).
+            approvers=(--approvers "${CA_APPROVERS:-$(node -p '(JSON.parse(require("fs").readFileSync(process.env.REQUEST)).approved_by ?? []).join(",")')}")
             node scripts/ca.mjs issue --request "$REQUEST" --certs "$work/certs" --issuer-serial "$(cat "$work/keys/authors.serial")" \
               --key-file "$work/keys/authors.key" --intermediates fixtures/trust/intermediates --source "$work/revocations.json" "${approvers[@]}"
             rm -rf "$work/keys"
           else
-            node scripts/ca.mjs revoke --request "$REQUEST" --certs "$work/certs" --source "$work/revocations.json"
+            node scripts/ca.mjs revoke --request "$REQUEST" --certs "$work/certs" --source "$work/revocations.json" --index signed/index.json \
+              --approvers "${CA_APPROVERS:-$(node -p '(JSON.parse(require("fs").readFileSync(process.env.REQUEST)).approved_by ?? []).join(",")')}"
           fi
           echo "TEST ONLY: issued by the TEST Authors CA; nothing was written to the repository or the Worker" >> "$work/TEST-ONLY.txt"
 
@@ -117,7 +130,8 @@ jobs:
               --intermediates certs/intermediates --source revocations.json --approvers "$CA_APPROVERS" \
               --key-env WOLOS_AUTHORS_CA_KEY --passphrase-env WOLOS_KEY_PASSPHRASE --result "$RUNNER_TEMP/issued.json" --archive
           else
-            node scripts/ca.mjs revoke --request "$REQUEST" --certs certs --source revocations.json --archive
+            node scripts/ca.mjs revoke --request "$REQUEST" --certs certs --source revocations.json --index signed/index.json \
+              --approvers "$CA_APPROVERS" --archive
           fi
 
       - name: Commit

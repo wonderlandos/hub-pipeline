@@ -63,7 +63,7 @@ i = base(); i.extensions[0].permissions = ["http"]; must("extension with permiss
 i = base(); i.plugins[0].url = i.apps[0].url; must("plugin without .wolplug", i, "url");
 i = base(); i.apps[0].sha256 = "XYZ"; must("bad sha256", i, "sha256");
 i = base(); i.apps[0].verdict = "block"; must("a blocked entry", i, "verdict");
-i = base(); i.apps[0].trust = "trusted"; must("unknown trust", i, "trust");
+i = base(); i.apps[0].trust = "verified"; must("unknown trust (verified is now trusted)", i, "trust");
 i = base(); i.apps[0].id = "bob.notes"; must("id outside the owner's namespace", i, "must start with the owner");
 i = base(); i.apps[0].id = "org.wolos.notes"; must("org.wolos. for a person", i, "org.wolos");
 i = base(); i.apps[0].source.repo = "mallory/notes"; must("url not in source.repo", i, "source.repo");
@@ -84,12 +84,23 @@ for (const [name, mut, text] of [["bad reason", (l) => { l.entries[0].reason = "
 const issue = JSON.parse(readFileSync(`${fx}/request-issue.json`, "utf8"));
 const rq = (name, mut, text) => { const r = structuredClone(issue); mut(r); const hit = checkRequest(r).some((e) => e.includes(text)); console.log(`${hit ? "ok  " : "FAIL"} request refused: ${name}`); n++; if (!hit) failed++; };
 rq("org.wolos. namespace", (r) => { r.namespaces = ["alice.", "org.wolos."]; }, "org.wolos");
-rq("namespace missing the login", (r) => { r.namespaces = ["other."]; }, "namespaces include");
+rq("namespace missing the login", (r) => { r.namespaces = ["other."]; }, "exactly");
 rq("no proof", (r) => { delete r.proof; }, "proof");
 rq("not approved", (r) => { delete r.approved_by; }, "approved_by");
+rq("no tier", (r) => { delete r.tier; }, "tier");
+rq("an unknown tier", (r) => { r.tier = "gold"; }, "tier");
+rq("origin without the CLA", (r) => { r.tier = "origin"; }, "cla_accepted_at");
 rq("approved by the subject", (r) => { r.approved_by = ["Alice"]; }, "own certificate");
 rq("one encryption key alone", (r) => { delete r.keys["ml-kem-768"]; }, "both or not at all");
-rq("an organisation inside an organisation", (r) => { r.kind = "org"; }, "only a person");
+rq("an organisation inside an organisation", (r) => { r.kind = "org"; r.requested_by = { github_id: 1003, login: "bob" }; }, "only a person");
+// audit-1 H2 (repro-namespace.mjs): extra prefixes for a person, any prefix for an organisation, reserved and look-alike names
+rq("a person asking for more prefixes than their own", (r) => { r.namespaces = ["alice.", "mozilla.", "signal.", "github."]; }, "exactly");
+rq("a person asking for a sub-prefix only", (r) => { r.namespaces = ["alice.tools."]; }, "exactly");
+rq("an organisation asking for another prefix", (r) => { r.kind = "org"; delete r.subject.org; r.requested_by = { github_id: 1003, login: "bob" }; r.namespaces = ["anything."]; }, "exactly");
+rq("an organisation request with nobody asking", (r) => { r.kind = "org"; delete r.subject.org; r.namespaces = ["alice."]; }, "requested_by");
+rq("a reserved login", (r) => { r.subject.login = "wolos"; r.namespaces = ["wolos."]; }, "reserved");
+rq("a login that looks like a reserved one", (r) => { r.subject.login = "w0los"; r.namespaces = ["w0los."]; }, "reserved");
+rq("a person requesting for someone else", (r) => { r.requested_by = { github_id: 1003, login: "bob" }; }, "for themselves");
 rq("approved before it was asked", (r) => { r.approved_at = r.requested_at - 1; }, "approved_at");
 rq("a short ml-kem-768 key", (r) => { r.keys["ml-kem-768"] = r.keys["ml-kem-768"].slice(1); }, "ml-kem-768");
 console.log(`${n - failed}/${n} negative checks`);
@@ -134,6 +145,10 @@ for t in junk:check/tool-failed slow:check/timeout fail:check/tool-failed; do
     HUBCHECK_SECS=1 HUBCHECK_BIN="$work/${t%%:*}-hubcheck" HUBCHECK_STORE="$work/store.json" node "$here/check-release.mjs" --pending "$work/pending.json" --assets-dir "$fx/assets" --out "$work/odd.json" --work "$work/scan4" >/dev/null
     nopass "$work/odd.json" && grep -q "${t#*:}" "$work/odd.json" && ok "a checker that ${t%%:*}s decides nothing (${t#*:})" || bad "${t%%:*} checker"
 done
+# the file must be the listing's: another id or another version than the release is blocked
+node -e 'const f=require("fs");const p=JSON.parse(f.readFileSync(process.argv[1]));const a=p.releases.find(r=>r.listing_id==="alice.notes");const b=structuredClone(a);b.listing_id="alice.other";const c=structuredClone(a);c.version="2.0";p.releases=[b,c];f.writeFileSync(process.argv[2],JSON.stringify(p))' "$work/pending.json" "$work/pending-swap.json"
+HUBCHECK_STORE="$work/store.json" node "$here/check-release.mjs" --pending "$work/pending-swap.json" --assets-dir "$fx/assets" --out "$work/swap.json" --work "$work/scan6" >/dev/null
+[ "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).verdicts.map(v=>v.verdict+" "+v.findings[0].rule).join(",")' "$work/swap.json")" = "block listing/id-mismatch,block listing/version-mismatch" ] && ok "a file listed under another id or version is blocked (hubcheck's file id and version)" || bad "id/version check: $(cat "$work/swap.json")"
 # without a revocation list the signature does not count (hubcheck says so), and the verdict stays the rules'
 node "$here/store.mjs" --roots "$trust/roots" --intermediates "$trust/intermediates" --allow-test --out "$work/store-nolist.json" >/dev/null
 HUBCHECK_STORE="$work/store-nolist.json" node "$here/check-release.mjs" --pending "$work/pending.json" --assets-dir "$fx/assets" --out "$work/nolist.json" --work "$work/scan5" >/dev/null
@@ -180,6 +195,35 @@ if [ -z "${SAMPLE_OUT:-}" ]; then
     [ $same = 1 ] && ok "fixtures/sample-signed is byte for byte what this run signed" || bad "fixtures/sample-signed is stale: SAMPLE_OUT=fixtures/sample-signed scripts/test.sh"
     verify index "$fx/sample-signed/index.json.wsig" "$fx/sample-signed/revoked.json" "$fx/sample-signed/index.json" && ok "the sample index verifies in woltrust" || bad "sample index: $(cat "$work/verify.json")"
 fi
+# Release statements (TRUST-core-4 shape, chat 7293): bodies and index references now; signing waits for the woltrust that has
+# --purpose release (tools/woltrust.features), so the sign step refuses rather than publish an index pointing at nothing.
+st=$work/st; mkdir -p "$st/out"
+node "$here/build-index.mjs" --export "$work/export.checked.json" --revoked "$out/revoked.json" --revoked-url https://cdn.wolos.org/plugins/revoked.json --statements "$st/out/statements" --statements-url https://cdn.wolos.org/plugins/statements --out "$st/out/index.json" >/dev/null && node "$here/validate.mjs" index "$st/out/index.json" >/dev/null && ok "index with release statement references is valid" || bad "statements index"
+node --input-type=module - "$here" "$st/out" <<'JS' && ok "one statement body per listed version, the frozen shape, serials matching the index" || bad "statement bodies"
+import { readFileSync } from "node:fs";
+const [, , here, dir] = process.argv;
+const { statementSerial, assemble } = await import(`${here}/statements.mjs`);
+const idx = JSON.parse(readFileSync(`${dir}/index.json`, "utf8"));
+const kinds = { apps: "package", plugins: "plugin", extensions: "extension" };
+let n = 0;
+for (const [list, kind] of Object.entries(kinds)) for (const e of idx[list]) {
+  const raw = readFileSync(`${dir}/statements/${e.id}/${e.version}.body.json`);
+  const b = JSON.parse(raw);
+  const keys = Object.keys(b).join(",");
+  const want = ["format", "serial", "sha256", "id", "version", "kind", ...(b.origin ? ["origin"] : []), "verdict", "findings", "checked_at", ...(b.cert ? ["cert"] : [])].join(",");
+  if (keys !== want || b.format !== 1 || b.kind !== kind || b.sha256 !== e.sha256 || b.cert !== e.cert || b.findings !== e.findings.length) throw new Error(`${e.id}: ${keys}`);
+  if (b.serial !== e.statement.serial || b.serial !== statementSerial(e.id, e.version, e.sha256) || e.statement.url !== `https://cdn.wolos.org/plugins/statements/${e.id}/${e.version}.wsig`) throw new Error(`${e.id}: serial or url`);
+  const f = JSON.parse(assemble(raw, { cert: "0e972272c2e22af3", ed25519: "e", second: "s" }));
+  if (Object.keys(f).join(",") !== "format,body,cert,sig" || !Buffer.from(f.body, "base64url").equals(raw)) throw new Error("file shape");
+  n++;
+}
+if (n !== 3) throw new Error(`${n} statements`);
+JS
+cp "$out/revoked.json" "$st/out/"
+expect_fail "statements are not signed while the pinned woltrust cannot (tools/woltrust.features)" "$here/sign-files.sh" "$st/out" "$INDEX_SERIAL"
+expect_fail "...and woltrust fe64176 itself has no --purpose release" env WOLTRUST_FEATURES=statements "$here/sign-files.sh" "$st/out" "$INDEX_SERIAL"
+[ ! -e "$st/out/index.json.wsig" ] && ok "so the index that points at statements was never signed" || bad "an index with unsigned statements was signed"
+
 # a half-empty export must not empty the index
 node -e 'const f=require("fs");const e=JSON.parse(f.readFileSync(process.argv[1]));const p={format:1,serial:41,issued:1,expires:2,apps:[],plugins:[],extensions:[]};for(let i=0;i<8;i++){const x=structuredClone(e.apps[0]);x.id="alice.a"+i;p.apps.push(x)}f.writeFileSync(process.argv[2],JSON.stringify(p))' "$fx/export.json" "$work/big-prev.json"
 expect_fail "an index that lost most of its entries" node "$here/build-index.mjs" --export "$work/export.checked.json" --revoked "$out/revoked.json" --revoked-url https://cdn.wolos.org/plugins/revoked.json --previous "$work/big-prev.json" --out "$work/x.json"
@@ -187,7 +231,7 @@ expect_fail "an index that lost most of its entries" node "$here/build-index.mjs
 # 4. The ca workflow: an approved request fetched from the Worker by id, issued by the real woltrust with the TEST
 #    Authors CA, the certificate reported back; then revocation.
 ca=$work/ca; mkdir -p "$ca/requests" "$ca/certs" "$ca/approved"; cp "$fx/request-revoke.json" "$ca/requests/"
-cp "$fx/request-issue.json" "$ca/approved/r-0001.json"
+cp "$fx/request-issue.json" "$ca/approved/r-0001.json"; cp "$fx/request-origin.json" "$ca/approved/r-0002.json"
 kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
 node "$here/mock-hub.mjs" --port 18787 --pending "$fx/pending.json" --export "$fx/export.json" --received "$work/received-ca.jsonl" --requests "$ca/approved" >"$work/mock-ca.log" &
 mock_pid=$!
@@ -197,21 +241,55 @@ expect_fail "an id that is not a request id" env HUB_TOKEN=ca-token node "$here/
 expect_fail "a request the Worker does not have" env HUB_TOKEN=ca-token node "$here/api.mjs" request --id r-9999 --out "$work/x.json"
 HUB_TOKEN=ca-token node "$here/api.mjs" request --id r-0001 --out "$ca/requests/r-0001.json" >/dev/null && node "$here/validate.mjs" request "$ca/requests/r-0001.json" >/dev/null && ok "approved request r-0001 fetched from the Worker and valid" || bad "fetch request"
 export WOLTRUST=$WOLTRUST_BIN
-issue() { node "$here/ca.mjs" issue --certs "$ca/certs" --issuer-serial "$AUTHORS_SERIAL" --key-file "$keys/authors.key" --intermediates "$trust/intermediates" --source "$ca/revocations.json" "$@"; }
+issue() { node "$here/ca.mjs" issue --github-fixture "$fx/github.json" --certs "$ca/certs" --issuer-serial "$AUTHORS_SERIAL" --key-file "$keys/authors.key" --intermediates "$trust/intermediates" --source "$ca/revocations.json" "$@"; }
 cp "$ca/requests/r-0001.json" "$work/r-0001.json"
 expect_fail "an approver who is not a CA approver" issue --request "$work/r-0001.json" --approvers dave
 expect_fail "nobody may approve (CA_APPROVERS empty)" issue --request "$work/r-0001.json" --approvers ""
+expect_fail "a trusted certificate without the approver list" issue --request "$work/r-0001.json"
 node -e 'const f=require("fs");const r=JSON.parse(f.readFileSync(process.argv[1]));r.proof.second=r.proof.second.replace(/^./,c=>c==="A"?"B":"A");f.writeFileSync(process.argv[2],JSON.stringify(r))' "$work/r-0001.json" "$work/bad-proof.json"
 expect_fail "a proof of possession that does not verify (woltrust issue --proof)" issue --request "$work/bad-proof.json" --approvers carol-ca
 node -e 'const f=require("fs");const r=JSON.parse(f.readFileSync(process.argv[1]));r.subject.github_id=1002;f.writeFileSync(process.argv[2],JSON.stringify(r))' "$work/r-0001.json" "$work/other-id.json"
 expect_fail "a proof made for another GitHub account" issue --request "$work/other-id.json" --approvers carol-ca
-expect_fail "the wrong CA key" node "$here/ca.mjs" issue --request "$work/r-0001.json" --certs "$ca/certs" --issuer-serial "$AUTHORS_SERIAL" --key-file "$keys/index.key" --intermediates "$trust/intermediates" --approvers carol-ca
+expect_fail "the wrong CA key" node "$here/ca.mjs" issue --github-fixture "$fx/github.json" --request "$work/r-0001.json" --certs "$ca/certs" --issuer-serial "$AUTHORS_SERIAL" --key-file "$keys/index.key" --intermediates "$trust/intermediates" --approvers carol-ca
+# audit-1 H2: what is signed comes from the signed request and from GitHub, never from the Worker's record
+squat() { node -e 'const f=require("fs");const r=JSON.parse(f.readFileSync(process.argv[1]));Object.assign(r.subject,JSON.parse(process.argv[2]));if(process.argv[3])r.namespaces=JSON.parse(process.argv[3]);f.writeFileSync(process.argv[4],JSON.stringify(r))' "$work/r-0001.json" "$1" "$2" "$3"; }
+squat '{"login":"mozilla"}' '["mozilla."]' "$work/squat.json"
+issue --request "$work/squat.json" --approvers carol-ca >"$work/h2.log" 2>&1 || true; grep -q "GitHub id 1001 is alice" "$work/h2.log" && ok "a login the Worker put in that GitHub does not give for the signed id is refused (squatting)" || bad "login squat: $(cat "$work/h2.log")"
+squat '{"github_id":4321}' '' "$work/squat2.json"
+issue --request "$work/squat2.json" --approvers carol-ca >"$work/h2.log" 2>&1 || true; grep -q "GitHub knows no user with id 4321" "$work/h2.log" && ok "a GitHub id GitHub does not know is refused" || bad "unknown id: $(cat "$work/h2.log")"
+squat '{"github_id":1004,"login":"a1ice"}' '["a1ice."]' "$work/confusable.json"
+node -e 'const f=require("fs");const r=JSON.parse(f.readFileSync(process.argv[1]));r.requested_by={github_id:1001,login:"alice"};f.writeFileSync(process.argv[2],JSON.stringify(r))' "$fx/request-org.json" "$work/org-by-member.json"
+expect_fail "an organisation certificate asked by a member who is not an owner" issue --request "$work/org-by-member.json"
+node -e 'const f=require("fs");const r=JSON.parse(f.readFileSync(process.argv[1]));r.requested_by={github_id:1006,login:"bob"};f.writeFileSync(process.argv[2],JSON.stringify(r))' "$fx/request-org.json" "$work/org-by-liar.json"
+expect_fail "an organisation certificate whose asker is not the GitHub id given" issue --request "$work/org-by-liar.json"
+CA_MJS="$here/ca.mjs" GH_MJS="$here/github-identity.mjs" GH="$fx/github.json" REQ="$work/r-0001.json" node --input-type=module -e '
+const { resolveIdentity } = await import(process.env.CA_MJS);
+const { githubIdentity } = await import(process.env.GH_MJS);
+const gh = githubIdentity(process.env.GH);
+const r = JSON.parse((await import("node:fs")).readFileSync(process.env.REQ));
+const a = await resolveIdentity({ ...r, subject: { ...r.subject, name: "Microsoft Corporation" } }, gh);
+const c = await resolveIdentity({ ...r, subject: { github_id: 1005, login: "carol", name: "x" }, namespaces: ["carol."] }, gh);
+const d = await resolveIdentity({ ...r, subject: { github_id: 1006, login: "dave", name: "x", org: { github_id: 2002, login: "examplelabs" } }, namespaces: ["dave."] }, gh);
+process.exit(a.subject.name === "Alice Example" && c.subject.name === "carol" && !d.subject.org && a.subject.org?.login === "examplelabs" ? 0 : 1);' && ok "name from GitHub (not the request), a bidi-spoofed GitHub name falls back to the login, an organisation only when GitHub shows the membership" || bad "identity from GitHub"
 [ -z "$(ls "$ca/certs")" ] && ok "nothing was written by the refused requests" || bad "a refused request left a certificate"
 issue --request "$ca/requests/r-0001.json" --approvers "carol-ca, erin" --result "$work/issued.json" --archive >"$work/issue.log" && ok "certificate issued by woltrust: $(cut -d' ' -f2 "$work/issue.log")" || bad "issue: $(cat "$work/issue.log")"
 serial=$(cut -d' ' -f2 "$work/issue.log")
 [ -f "$ca/certs/$serial.wolcert" ] && [ -f "$ca/requests/done/r-0001.json" ] && ok "certificate written, request archived" || bad "issue files"
-node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1]));const b=JSON.parse(Buffer.from(c.body,"base64url"));const k=b.keys;process.exit(k.x25519&&k["ml-kem-768"]&&b.verified_at===1793710000&&b.subject.org?.login==="examplelabs"&&b.issuer===process.argv[2]?0:1)' "$ca/certs/$serial.wolcert" "$AUTHORS_SERIAL" && ok "the body carries x25519, ml-kem-768, verified_at and subject.org" || bad "certificate body"
-HUB_TOKEN=ca-token node "$here/api.mjs" issued --in "$work/issued.json" >/dev/null && grep -q "\"serial\":\"$serial\"" "$work/received-ca.jsonl" && ok "the Worker was told: r-0001 -> $serial" || bad "issued not posted"
+node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1]));const b=JSON.parse(Buffer.from(c.body,"base64url"));const k=b.keys;process.exit(k.x25519&&k["ml-kem-768"]&&b.verified_at===1793750400&&b.subject.org?.login==="examplelabs"&&b.subject.name==="Alice Example"&&JSON.stringify(b.namespaces)==="[\"alice.\"]"&&b.issuer===process.argv[2]?0:1)' "$ca/certs/$serial.wolcert" "$AUTHORS_SERIAL" && ok "the body carries x25519, ml-kem-768, verified_at and subject.org" || bad "certificate body"
+HUB_TOKEN=ca-token node "$here/api.mjs" issued --in "$work/issued.json" >/dev/null && grep -q "\"serial\":\"$serial\",\"tier\":\"trusted\"" "$work/received-ca.jsonl" && ok "the Worker was told: r-0001 -> $serial (trusted)" || bad "issued not posted"
+# The origin tier: issued on the CLA alone, no approver, next to the trusted one; one active origin certificate per account.
+HUB_TOKEN=ca-token node "$here/api.mjs" request --id r-0002 --out "$ca/requests/r-0002.json" >/dev/null || bad "fetch origin request"
+issue --request "$ca/requests/r-0002.json" --result "$work/issued-origin.json" --archive >"$work/issue-origin.log" && grep -q "person, origin" "$work/issue-origin.log" && ok "origin certificate issued without an approval: $(cut -d' ' -f2 "$work/issue-origin.log")" || bad "origin issue: $(cat "$work/issue-origin.log")"
+oserial=$(cut -d' ' -f2 "$work/issue-origin.log")
+node -e 'const f=require("fs");const a=JSON.parse(f.readFileSync(process.argv[1]+"/"+process.argv[2]+".json")),b=JSON.parse(f.readFileSync(process.argv[1]+"/"+process.argv[3]+".json"));process.exit(a.tier==="trusted"&&a.approved_by[0]==="carol-ca"&&b.tier==="origin"&&b.cla_accepted_at===1793690000?0:1)' "$ca/certs" "$serial" "$oserial" && ok "certs/<serial>.json records the tier (trusted: approved_by; origin: cla_accepted_at)" || bad "tier records"
+HUB_TOKEN=ca-token node "$here/api.mjs" issued --in "$work/issued-origin.json" >/dev/null && grep -q "\"serial\":\"$oserial\",\"tier\":\"origin\"" "$work/received-ca.jsonl" && ok "the Worker was told: r-0002 -> $oserial (origin)" || bad "origin issued not posted"
+expect_fail "a second origin certificate for the same account" issue --request "$ca/requests/done/r-0002.json"
+# The index shows the tier: a file signed with the origin certificate is origin, one signed with the trusted one verified.
+node -e 'const f=require("fs");const e=JSON.parse(f.readFileSync(process.argv[1]));e.apps[0].cert=process.argv[2];e.plugins[0].cert=process.argv[3];f.writeFileSync(process.argv[4],JSON.stringify(e))' "$work/export.checked.json" "$serial" "$oserial" "$work/export-tiers.json"
+tiers() { node "$here/build-index.mjs" --export "$work/export-tiers.json" --revoked "$out/revoked.json" --revoked-url https://cdn.wolos.org/plugins/revoked.json --certs "$ca/certs" --revocations "$1" --out "$work/index-tiers.json" >/dev/null && node -p 'const i=require(process.argv[1]);i.apps[0].trust+" "+i.plugins[0].trust' "$work/index-tiers.json"; }
+[ "$(tiers "$ca/none.json")" = "trusted origin" ] && ok "index: trusted certificate -> trusted, origin certificate -> origin" || bad "index tiers: $(tiers "$ca/none.json")"
+node -e 'require("fs").writeFileSync(process.argv[2],JSON.stringify({format:1,entries:[{serial:process.argv[1],at:1793745000,reason:"superseded"}]}))' "$serial" "$work/rev-superseded.json"
+[ "$(tiers "$work/rev-superseded.json")" = "origin origin" ] && ok "a trusted certificate revoked as superseded is downgraded: its files show as origin" || bad "downgrade: $(tiers "$work/rev-superseded.json")"
 # the new certificate works: a file its owner signs verifies as verified through the chain, inside alice.
 node -e 'import("'"$here"'/test-keys.mjs").then(m=>process.stdout.write(m.testKeyText("hub-index-request-alice")))' >"$keys/alice.key"
 printf 'a release\n' >"$work/release.bin"
@@ -221,13 +299,37 @@ vpkg() { "$WOLTRUST_BIN" verify --purpose package --wsig "$work/release.wsig" --
 vpkg "$out/revoked.json" alice.notes && grep -q '"trust":"verified"' "$work/verify.json" && ok "a file signed with the new certificate verifies (verified, alice.)" || bad "new certificate: $(cat "$work/verify.json")"
 expect_fail "...but not for an id outside alice." vpkg "$out/revoked.json" bob.notes
 expect_fail "a second certificate for the same account" issue --request "$ca/requests/done/r-0001.json" --approvers carol-ca
-expect_fail "revoking a serial that was never issued" node "$here/ca.mjs" revoke --request "$ca/requests/request-revoke.json" --certs "$ca/certs" --source "$ca/revocations.json"
+issue --request "$work/confusable.json" --approvers carol-ca >"$work/h2.log" 2>&1 || true; grep -q "looks like alice." "$work/h2.log" && ok "a look-alike of an issued namespace (a1ice. vs alice.) is refused" || bad "confusable: $(cat "$work/h2.log")"
+cp "$fx/request-org.json" "$ca/requests/r-0003.json"
+issue --request "$ca/requests/r-0003.json" >"$work/org.log" 2>&1 && grep -q "examplelabs (org, origin), namespaces examplelabs." "$work/org.log" && ok "an organisation certificate, asked by its owner on GitHub: examplelabs." || bad "org issue: $(cat "$work/org.log")"
+expect_fail "revoking a serial that was never issued" node "$here/ca.mjs" revoke --approvers carol-ca --request "$ca/requests/request-revoke.json" --certs "$ca/certs" --source "$ca/revocations.json"
 node -e 'const f=require("fs");const r=JSON.parse(f.readFileSync(process.argv[1]));r.serial=process.argv[2];r.reason="key-compromise";f.writeFileSync(process.argv[3],JSON.stringify(r))' "$fx/request-revoke.json" "$serial" "$ca/requests/revoke-issued.json"
-node "$here/ca.mjs" revoke --request "$ca/requests/revoke-issued.json" --certs "$ca/certs" --source "$ca/revocations.json" >/dev/null && ok "revocation appended to revocations.json" || bad "revoke"
+node "$here/ca.mjs" revoke --approvers carol-ca --request "$ca/requests/revoke-issued.json" --certs "$ca/certs" --source "$ca/revocations.json" >/dev/null && ok "revocation appended to revocations.json" || bad "revoke"
 node "$here/build-revoked.mjs" --source "$ca/revocations.json" --out "$work/rev2.json" >/dev/null && grep -q "$serial" "$work/rev2.json" && ok "...and it is in the next revoked.json" || bad "revocation not propagated"
+node -e 'const f=require("fs");const s=JSON.parse(f.readFileSync(process.argv[1]));process.exit(s.entries.find(e=>e.serial===process.argv[2]).at===Number(process.argv[3])?0:1)' "$ca/revocations.json" "$serial" "$HUB_NOW" && ok "the revocation time is the job's clock, not the request's at" || bad "revocation at from the request"
+node -e 'const f=require("fs");const r=JSON.parse(f.readFileSync(process.argv[1]));r.serial=process.argv[2];r.reason="abuse";r.approved_by=["carol-ca","erin"];f.writeFileSync(process.argv[3],JSON.stringify(r))' "$fx/request-revoke.json" "$oserial" "$work/abuse.json"
+expect_fail "a revocation approved by someone who is not a CA approver" node "$here/ca.mjs" revoke --approvers carol-ca --request "$work/abuse.json" --certs "$ca/certs" --source "$ca/revocations.json"
+node -e 'const f=require("fs");const r=JSON.parse(f.readFileSync(process.argv[1]));r.approved_by=["carol-ca"];f.writeFileSync(process.argv[1],JSON.stringify(r))' "$work/abuse.json"
+expect_fail "abuse with one approver" node "$here/ca.mjs" revoke --approvers carol-ca,erin --request "$work/abuse.json" --certs "$ca/certs" --source "$ca/revocations.json"
 "$WOLTRUST_BIN" sign --purpose revocation --cert "$INDEX_SERIAL" --key-file "$keys/index.key" "$work/rev2.json" >"$work/rev2.json.wsig"
 vpkg "$work/rev2.json" alice.notes || true; grep -q '"trust":"withdrawn"' "$work/verify.json" && ok "...which withdraws the file signed with it (woltrust verify)" || bad "revoked certificate still trusted: $(cat "$work/verify.json")"
+[ "$(tiers "$ca/revocations.json")" = "trusted origin" ] && ok "key-compromise is no downgrade: the index is unchanged and woltrust withdraws the signatures, as before" || bad "key-compromise tiers: $(tiers "$ca/revocations.json")"
 issue --request "$ca/requests/done/r-0001.json" --approvers carol-ca >/dev/null 2>&1 && ok "after the revocation the account may get a new certificate" || bad "re-issue after revocation"
+# Withdrawing one version: a revocation by statement serial, reason withdrawn-version; the certificate stays.
+pserial=$(node -p 'require(process.argv[1]).plugins[0].statement.serial' "$st/out/index.json")
+node -e 'const f=require("fs");f.writeFileSync(process.argv[2],JSON.stringify({format:1,action:"revoke",serial:process.argv[1],reason:"withdrawn-version",approved_by:["carol-ca"],at:1793749000}))' "$pserial" "$ca/requests/withdraw.json"
+node -e 'const f=require("fs");f.writeFileSync(process.argv[1],JSON.stringify({format:1,action:"revoke",serial:"00000000000000aa",reason:"withdrawn-version",approved_by:["carol-ca"]}))' "$ca/requests/withdraw-bad.json"
+expect_fail "withdrawing a version that is not in the index" node "$here/ca.mjs" revoke --approvers carol-ca --request "$ca/requests/withdraw-bad.json" --certs "$ca/certs" --source "$ca/revocations.json" --index "$st/out/index.json"
+node "$here/ca.mjs" revoke --approvers carol-ca --request "$ca/requests/withdraw.json" --certs "$ca/certs" --source "$ca/revocations.json" --index "$st/out/index.json" >"$work/withdraw.log" && grep -q "withdrawing alice.weather 1.2" "$work/withdraw.log" && ok "version withdrawn: alice.weather 1.2 (statement $pserial)" || bad "withdraw: $(cat "$work/withdraw.log")"
+node "$here/build-index.mjs" --export "$work/export.checked.json" --revoked "$out/revoked.json" --revoked-url https://cdn.wolos.org/plugins/revoked.json --revocations "$ca/revocations.json" --statements "$st/w" --statements-url https://cdn.wolos.org/plugins/statements --out "$work/index-withdrawn.json" >/dev/null
+node -e 'const i=require(process.argv[1]);process.exit(i.plugins[0].withdrawn===true&&!i.apps[0].withdrawn&&!i.extensions[0].withdrawn&&i.plugins[0].cert==="fd51eec17572cf6c"&&i.apps[0].cert==="fd51eec17572cf6c"?0:1)' "$work/index-withdrawn.json" && node "$here/validate.mjs" index "$work/index-withdrawn.json" >/dev/null && ok "the index marks that version withdrawn; the other release of the same certificate is untouched" || bad "withdrawn mark"
+node "$here/build-revoked.mjs" --source "$ca/revocations.json" --out "$work/rev-w0.json" >/dev/null && ! grep -q "$pserial" "$work/rev-w0.json" && ok "revoked.json leaves withdrawn-version out while woltrust cannot read it" || bad "withdrawn-version written for fe64176"
+WOLTRUST_FEATURES=withdrawn-version node "$here/build-revoked.mjs" --source "$ca/revocations.json" --out "$work/rev-w1.json" >/dev/null && grep -q "$pserial" "$work/rev-w1.json" && node "$here/validate.mjs" revoked "$work/rev-w1.json" >/dev/null && ok "...and writes it once it can (withdrawn-version)" || bad "withdrawn-version with the feature"
+# The tier in the signed body (TRUST-core-4 class/origin_cert): ready, off while fe64176 refuses unknown body keys.
+rm -rf "$ca/c2"; mkdir -p "$ca/c2"
+WOLTRUST_FEATURES=class node "$here/ca.mjs" issue --github-fixture "$fx/github.json" --request "$ca/requests/done/r-0001.json" --certs "$ca/c2" --issuer-serial "$AUTHORS_SERIAL" --key-file "$keys/authors.key" --approvers carol-ca >"$work/class.log" 2>&1 || true; grep -q "origin certificate first" "$work/class.log" && ok "class: a trusted certificate needs the subject's origin certificate first" || bad "class order: $(cat "$work/class.log")"
+WOLTRUST_FEATURES=class node "$here/ca.mjs" issue --github-fixture "$fx/github.json" --request "$ca/requests/done/r-0002.json" --certs "$ca/c2" --issuer-serial "$AUTHORS_SERIAL" --key-file "$keys/authors.key" >"$work/class.log" 2>&1 || true; grep -q "woltrust issue failed" "$work/class.log" && ok "class: woltrust fe64176 refuses a body with class (why tools/woltrust.features leaves it out)" || bad "class body: $(cat "$work/class.log")"
+CA_MJS="$here/ca.mjs" REQ="$ca/requests/done/r-0001.json" node --input-type=module -e 'const m=await import(process.env.CA_MJS);const r=JSON.parse((await import("node:fs")).readFileSync(process.env.REQ));const b=m.certBody(r,{serial:"1".repeat(16),issuer:"2".repeat(16),now:1793750400,identity:{subject:{github_id:1001,login:"alice",name:"Alice Example"},namespaces:["alice."]},withClass:true,originCert:"3".repeat(16)});process.exit(b.class==="trusted"&&b.origin_cert==="3".repeat(16)?0:1)' && ok "class: a trusted body carries class and origin_cert" || bad "class fields"
 
 # 5. Optional: keep what was made as the sample (SAMPLE_OUT=fixtures/sample-signed scripts/test.sh).
 if [ -n "${SAMPLE_OUT:-}" ]; then

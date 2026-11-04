@@ -3,6 +3,7 @@
 # Uploads a signed publication to the CDN under plugins/ and reads it back.
 #
 #   publish.sh <dir>        <dir>: index.json index.json.sig index.json.wsig revoked.json revoked.json.wsig
+#                           [statements/<id>/<version>.wsig]
 #
 # WOLOS_CDN_UPLOAD_TOKEN   the token (secret of the sign environment), handed to cdn-put as UPLOAD_TOKEN
 # CDN_BASE                 the upload server, default what cdn-put knows (its own default)
@@ -19,6 +20,11 @@ dir=${1:?usage: publish.sh <dir>}
 public=${CDN_PUBLIC:-https://cdn.wolos.org}
 files=(revoked.json revoked.json.wsig index.json.wsig index.json.sig index.json)
 for f in "${files[@]}"; do [ -s "$dir/$f" ] || { echo "publish: $dir/$f is missing" >&2; exit 1; }; done
+# Release statements go first of all: the index points at them.
+if [ -d "$dir/statements" ]; then
+    mapfile -t statements < <(cd "$dir" && find statements -name '*.wsig' | LC_ALL=C sort)
+    files=("${statements[@]}" "${files[@]}")
+fi
 
 if [ "${DRY_RUN:-0}" = 1 ]; then
     for f in "${files[@]}"; do echo "dry run: would upload $dir/$f to plugins/$f ($(wc -c <"$dir/$f") bytes)"; done

@@ -31,5 +31,6 @@
       "login": "examplelabs"
     }
   },
+  "tier": "trusted",
   "verified_at": 1793710000
 }

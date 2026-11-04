@@ -60,27 +60,55 @@ than half of a real one is not signed without a person saying `force`.
 
 ## How a certificate is issued
 
-Issuing is automatic once a hub admin approves (lead rule). No person clicks anything in GitHub.
+There are two tiers of author certificate (lead decision 2026-11-04), for persons and for organisations (a company too):
+
+| tier | says | issued when | index shows its files as |
+|---|---|---|---|
+| `origin` | who made the file and from which repository | automatically, once the person or organisation has accepted the CLA (`cla_accepted_at`) | `origin` |
+| `trusted` | a developer or organisation the hub vetted | automatically, once an admin approves in the admin panel (`approved_by` in `CA_APPROVERS`) | `trusted` |
+
+An account may hold one active certificate of each tier. Revoking a trusted certificate with reason `superseded` downgrades: the
+index then shows the files it signed as `origin` (`build-index.mjs --certs certs --revocations revocations.json`). `key-compromise` and
+`abuse` revoke as before: woltrust withdraws every signature of that certificate on every client. The tier is recorded next to the
+certificate in `certs/<serial>.json`
+(`{serial, tier, kind, github_id, login, request_id, issued_at, approved_by+approved_at | cla_accepted_at}`). A certificate without that
+record (issued before the tiers) counts as trusted. TRUST-core-4 puts the tier into the signed body too (`"class":"origin"|"trusted"`,
+a trusted certificate carrying `"origin_cert"`, the serial of the subject's origin certificate, so an origin certificate comes first);
+`ca.mjs` writes those keys once `tools/woltrust.features` lists `class` (woltrust `fe64176` refuses unknown body keys).
+
+Issuing needs no person in GitHub.
 
 1. The author runs `wol cert request` (woltrust `request::Request`): keys made on their machine, the public halves (Ed25519, ML-DSA-65,
    and the encryption keys X25519 and ML-KEM-768) and a proof of possession, sent to the Worker (`POST /api/certs/requests`).
-2. A hub admin approves it in the admin panel. The Worker refuses an admin approving their own request, then stores the request as the
-   file below, with `approved_by` (the admin's GitHub login) and `approved_at`, and starts the ca workflow through the GitHub API:
+2. For `origin`, the Worker checks its record that the CLA was accepted and adds `cla_accepted_at`. For `trusted`, a hub admin approves
+   in the admin panel; the Worker refuses an admin approving their own request and adds `approved_by` (the admin's GitHub login) and
+   `approved_at`. Then it stores the request as the file below and starts the ca workflow through the GitHub API:
    `POST /repos/wonderlandos/hub-index/actions/workflows/ca.yml/dispatches` with `{"ref":"main","inputs":{"request_id":"<id>","dry_run":"false"}}`,
    using the hub GitHub App's installation token (on this repository it has `actions: write` and nothing else).
 3. **ca** asks the Worker for the request with its OIDC token: `GET /api/pipeline/requests/<id>` (the Worker accepts `ca.yml` on `main`,
    environment `ca`, audience `hub.wolos.org`, and answers only an approved request that has no certificate yet; the body is the request
-   file itself). It writes `requests/<id>.json`, checks it against `schema/request.schema.json`, checks that every `approved_by` login is
-   in the variable `CA_APPROVERS`, builds the certificate body (`ca.mjs certBody`: keys including x25519 and ml-kem-768, `subject.org`,
+   file itself). It writes `requests/<id>.json`, checks it against `schema/request.schema.json`, for `trusted` checks that every
+   `approved_by` login is in the variable `CA_APPROVERS`, builds the certificate body (`ca.mjs certBody`: keys including x25519 and ml-kem-768, `subject.org`,
    `verified_at`), and `woltrust issue --proof` checks the proof again and signs exactly that body. `ca.mjs` checks the Ed25519 half
    against the Authors CA certificate in `certs/intermediates/` before anything is written.
-4. It commits `certs/<serial>.wolcert` and `requests/done/<id>.json` (the public log), then tells the Worker:
-   `POST /api/pipeline/certs` with `{"request_id","serial","cert"}` (`cert` = the exact `.wolcert` text). The Worker shows the
+4. It commits `certs/<serial>.wolcert`, `certs/<serial>.json` and `requests/done/<id>.json` (the public log), then tells the Worker:
+   `POST /api/pipeline/certs` with `{"request_id","serial","tier","cert"}` (`cert` = the exact `.wolcert` text). The Worker shows the
    certificate to the author, who adds it with `wol cert add`.
 
+What a certificate says comes from two places only (audit-1 H2): what the requester signed (github_id, kind, keys: the
+proof covers them; TRUST-core-4 extends the proof to namespaces, login, name and org) and what GitHub says about that github_id,
+asked by the ca job itself with its own read-only token (`scripts/github-identity.mjs`): the login and display name
+(`GET /user/{id}`, `/organizations/{id}`), a person's organisation only when GitHub shows the membership publicly, and for an
+organisation that `requested_by` is an owner (`GET /orgs/{org}/memberships/{login}`, needs `CA_GITHUB_TOKEN` with members:read; without
+it organisation certificates are refused). A login in the request that is not GitHub's is refused; the name is GitHub's (a name with
+bidi or format characters becomes the login). The namespace is exactly `<login>.` (lowercase) for persons and organisations, never a
+reserved name or a look-alike of one (`validate.mjs` `RESERVED_NAMES`, `skeleton`), and never the same as or a look-alike of another
+account's active certificate. The Worker's fields (approved_by, cla_accepted_at, verified_at, months) decide only whether the job runs.
+A revocation uses the job's clock (the request's `at` is ignored) and every approver must be in `CA_APPROVERS` (abuse: two).
+
 A second dispatch for the same id stops at once (`requests/done/<id>.json` exists); one GitHub account has one active certificate
-per kind (revoke the old one, reason `superseded`, first). A request file the CA operator writes by hand needs the same
-`approved_by`; it reaches `main` through a reviewed pull request and is issued with `request=requests/<name>.json`.
+per kind and tier (revoke the old one, reason `superseded`, first). A request file the CA operator writes by hand needs the same
+`cla_accepted_at` or `approved_by`; it reaches `main` through a reviewed pull request and is issued with `request=requests/<name>.json`.
 
 Why a dispatch with the id and not a pull request from the Worker's bot: the workflow that holds the CA key then only ever runs code
 from `main` (a workflow dispatch on `ref: main`, environment `ca` limited to `main`), never code or files from a pull request; the
@@ -95,20 +123,47 @@ The request file (`schema/request.schema.json`, action `issue`), as the Worker w
 {
   "format": 1, "action": "issue",
   "id": "r-0001",                                          the Worker's request id; the file is requests/<id>.json
-  "kind": "person" | "org",
+  "kind": "person" | "org",                               covered by the proof
+  "tier": "origin" | "trusted",                            named tier because kind is taken
   "subject": { "github_id": 1001, "login": "alice", "name": "Alice Example",
                "org": { "github_id": 2002, "login": "examplelabs" } },   person only, optional: GitHub membership the hub saw
-  "namespaces": ["alice."],                                 a person's include "<login>."; never org.wolos.
+  "requested_by": { "github_id": 1003, "login": "bob" },  organisations: an owner (checked with GitHub); persons: absent or themselves
+  "namespaces": ["alice."],                                 exactly ["<login>."], lowercase
   "keys": { "ed25519": b64url(32), "ml-dsa-65": b64url(1952),
             "x25519": b64url(32), "ml-kem-768": b64url(1184) },          the encryption pair both or none
   "proof": { "ed25519": b64url(64), "second": b64url },    label wolos/request/1 over "{github_id}\n{kind}\n{ed25519}\n{ml-dsa-65}\n{slh}\n{x25519}\n{ml-kem-768}\n"
   "months": 12, "requested_at": 1793700000,
   "verified_at": 1793710000,                                when the hub last verified the account (certificate verified_at)
-  "approved_by": ["carol-ca"], "approved_at": 1793740000   required; never the subject
+  "approved_by": ["carol-ca"], "approved_at": 1793740000,  trusted: required, never the subject
+  "cla_accepted_at": 1793690000                            origin: required
 }
 ```
 
-`fixtures/request-issue.json` is one with real keys and a real proof (TEST, `fixtures/gen/`).
+`fixtures/request-issue.json` (trusted) and `fixtures/request-origin.json` (origin) have real keys and a real proof (TEST, `fixtures/gen/`).
+
+## Release statements
+
+Every listed version gets its own signed release statement (lead decision 2026-11-04; shape by TRUST-core-4, chat 7293):
+
+```
+signed/statements/<id>/<version>.wsig   = plugins/statements/<id>/<version>.wsig on the CDN
+{"format":1, "body":b64url(body), "cert":"<Index intermediate serial>", "sig":{"ed25519","second"}}    label wolos/release/1
+body {"format":1, "serial", "sha256", "id", "version", "kind":"package|plugin|extension", "origin"?:{"repo","tag","commit"},
+      "verdict", "findings":<count>, "checked_at", "cert"?:"<author certificate serial>"}
+```
+
+The statement serial is the first 8 bytes of SHA-256(`wolos/release/1` 0x00 id 0x00 version 0x00 sha256), so re-signing the same
+file keeps it (`scripts/statements.mjs`). `build-index.mjs --statements DIR --statements-url URL` writes each body and points the
+entry at its statement (`statement: {url, serial}`); `sign-files.sh` signs the statements first (`woltrust sign --purpose release`),
+then the index; `publish.sh` uploads them before everything else. Withdrawing one version: a revoke request with the statement serial
+and reason `withdrawn-version` (`ca.mjs revoke --index signed/index.json` refuses a serial that is not a listed version's); the next
+sign run marks the entry `withdrawn: true` and puts the serial on `revoked.json`. The author's certificate is untouched.
+
+Until the pinned woltrust has the release purpose and the new reason, `tools/woltrust.features` is empty: sign.yml builds no
+statements, `revoked.json` leaves `withdrawn-version` entries out (an unknown reason would make woltrust refuse the whole list;
+they wait in `revocations.json`, and the index already marks the version withdrawn), and `sign-files.sh` refuses to sign an index that
+points at statements it cannot sign. Moving `tools/woltrust.rev` to TRUST-core-4's commit and adding `class`, `statements`,
+`withdrawn-version` to `tools/woltrust.features` switches all three on.
 
 ## What each environment holds
 
@@ -119,7 +174,7 @@ Secret values live only in the repository's Environment settings. This repositor
 | none | `ci.yml`, job `scan` of `check.yml` | none | none | `scan` has no `id-token`, no write right, no environment: it opens untrusted files and has nothing to lose |
 | `check` | jobs `fetch` and `report` of `check.yml` | none | none | OIDC only (audience `hub.wolos.org`); the Worker accepts this workflow file on `main` with environment `check`; it can read pending and post verdicts, not export |
 | `sign` | `sign.yml` | `WOLOS_INDEX_SIGNING_KEY` (Index intermediate), `WOLOS_KEY_PASSPHRASE` (when that key is a locked `.wolkey`), `WOLOS_LEGACY_INDEX_KEY` (legacy Ed25519 PEM), `WOLOS_CDN_UPLOAD_TOKEN` | `INDEX_CERT_SERIAL`, optional `CDN_BASE` | deployment branch `main` only; OIDC token can export, not post; parses no release file; tools built from source in the job, no cache |
-| `ca` | `ca.yml` | `WOLOS_AUTHORS_CA_KEY` (Authors CA intermediate), `WOLOS_KEY_PASSPHRASE` (when locked) | `AUTHORS_CA_SERIAL`, `CA_APPROVERS` (admin logins, comma separated) | deployment branch `main` only; no required reviewers (the second person is the approving admin, see "How a certificate is issued"); OIDC token reads approved requests and reports certificates; tools built from source, no cache |
+| `ca` | `ca.yml` | `WOLOS_AUTHORS_CA_KEY` (Authors CA intermediate), `WOLOS_KEY_PASSPHRASE` (when locked) | `AUTHORS_CA_SERIAL`, `CA_APPROVERS` (admin logins, comma separated) | deployment branch `main` only; no required reviewers (origin needs the CLA only; for trusted the second person is the approving admin, see "How a certificate is issued"); OIDC token reads approved requests and reports certificates; tools built from source, no cache |
 
 `WOLOS_KEY_PASSPHRASE` is one secret name in both environments, as `woltrust init` prints it (`ci/passphrase`); woltrust reads it only when
 the key secret is a locked `.wolkey` (`--passphrase-env WOLOS_KEY_PASSPHRASE`). Before the first real run, `certs/roots/` and
@@ -139,11 +194,11 @@ Both tools are built from the commit in `tools/<name>.rev` by `scripts/tool.sh <
 --locked`; the binary is cached in `~/.cache/hub-index-tools/<name>-<rev>/bin`, in actions/cache for `ci.yml` and the scan job, never for the
 jobs that hold secrets). There are no stand-ins: dry runs and `scripts/test.sh` run the same binaries with the TEST authority.
 
-`hubcheck` (HUB-wasm, `wonderlandos/hub` `wasm/`, `tools/hubcheck.rev` = `7c752c9`), called by `check-release.mjs`:
+`hubcheck` (HUB-wasm, `wonderlandos/hub` `wasm/`, `tools/hubcheck.rev` = `a0fcf58`; zstd plugins and extensions are read by default), called by `check-release.mjs`:
 `hubcheck inspect app|plugin|extension FILE --store store.json --now UNIX [--first-seen UNIX]` prints one line of I7 JSON,
-`{"verdict":"pass|flag|block|not-checked","findings":[{"rule","sentence","evidence"}],"trust":"wolos|verified|community|withdrawn|invalid","cert"?:{"serial","subject","level"},"origin"?}`,
+`{"verdict":"pass|flag|block|not-checked","findings":[{"rule","sentence","evidence"}],"trust":"wolos|verified|community|withdrawn|invalid","cert"?:{"serial","subject","level"},"origin"?,"file"?:{"id","version"?}}`,
 exit 0 whenever it printed a report. The verdict is hubcheck's; `check-release.mjs` adds only what hubcheck cannot know (download, the size
-GitHub listed, the 120-second limit) and turns anything else (no binary, no store, a non-zero exit, output that is not a report, a timeout)
+GitHub listed, the 120-second limit, and a block when `file.id` or `file.version` is not the listing's) and turns anything else (no binary, no store, a non-zero exit, output that is not a report, a timeout)
 into `not-checked`. `store.json` is `scripts/store.mjs` (`{"roots":[...],"intermediates":[...],"allow_test":false,"revoked":[{"list","wsig"}]}`).
 
 `woltrust` (the woltrust crate of wolos, `src/bin/woltrust.rs`, `tools/woltrust.rev` = `fe64176`, branch `wave3/trust-core`):
@@ -155,6 +210,8 @@ into `not-checked`. `store.json` is `scripts/store.mjs` (`{"roots":[...],"interm
   against the body and prints the `.wolcert` whose `body` is exactly the bytes of BODY.json (`ca.mjs` refuses an answer whose body differs,
   or whose Ed25519 half is not the CA's);
 - `woltrust revoke --source revocations.json [--previous revoked.json] [--now N]` makes the same list as `build-revoked.mjs` (`test.sh` compares them).
+- `tools/woltrust.features` lists what the pinned woltrust can do beyond `fe64176` (`class`, `statements`, `withdrawn-version`); the scripts
+  read it and leave out what woltrust would refuse.
 
 Exit codes: 0 done, 1 refused (the reason on stderr), 2 a wrong command line. Key material comes from the environment or a file, never
 an argument.
@@ -174,8 +231,9 @@ fixtures/gen/run.sh             remake the binary fixtures (assets, fixtures/tru
 (an app signed by the TEST person alice that passes, a plugin by alice and an extension by the TEST organisation examplelabs that are
 flagged because they are plain tar, an app changed after packing that is blocked, a file that is gone, a file whose size changed: six
 verdicts with trust and cert), the sign scripts with the TEST Index intermediate (`docs/test-keys.md`) and `woltrust verify` of what they
-signed, the committed sample compared byte for byte, the ca path from the Worker's approved request to a certificate that a file then
-verifies with (and that its revocation withdraws), and about 60 negative cases (a bad URL, an id outside the owner's namespace, a tampered
+signed, the committed sample compared byte for byte, the ca path from the Worker's request to a certificate of each tier (a trusted one a file then
+verifies with and that its revocation withdraws, an origin one issued on the CLA alone; the index showing trusted, origin, and the
+superseded downgrade; release statement bodies and references, a withdrawn version), and about 60 negative cases (a bad URL, an id outside the owner's namespace, a tampered
 index, an owner taken over, an index that lost most of its entries, a checker that fails or hangs, a forged proof, an approver who is not a
 CA approver, the wrong CA key, ...). In GitHub, `sign.yml` and `ca.yml` start as dry runs (the default of `dry_run`).
 
