@@ -61,14 +61,27 @@ for f in "${files[@]}"; do
 done
 
 # Read back what clients will read. The CDN may need a moment; the files must match byte for byte.
+# A picture must also come with its own type: the CDN (wolos-cdn bucket.rs serve, tower-http ServeFile) types a file by
+# its name's extension (.png image/png, .webp image/webp) and every answer says nosniff, so a page would not show a
+# picture served as anything else. cdn-put has no type to give (its parts are application/octet-stream); the name is it.
+headers=$(mktemp "${TMPDIR:-/tmp}/publish-headers.XXXXXX")
+trap 'rm -f "$headers"' EXIT
 for f in "${files[@]}"; do
     want=$(sha256sum "$dir/$f" | cut -d' ' -f1)
     ok=0
     for try in 1 2 3 4 5 6; do
-        got=$(curl -fsS --max-time 30 -H 'Cache-Control: no-cache' "$public/$(target "$f")" | sha256sum | cut -d' ' -f1 || true)
+        got=$(curl -fsS --max-time 30 -H 'Cache-Control: no-cache' -D "$headers" "$public/$(target "$f")" | sha256sum | cut -d' ' -f1 || true)
         if [ "$got" = "$want" ]; then ok=1; break; fi
         sleep $((try * 5))
     done
     [ "$ok" = 1 ] || { echo "publish: $public/$(target "$f") does not serve the file that was uploaded" >&2; exit 1; }
-    echo "published: $public/$(target "$f") ($want)"
+    case $f in
+    pictures/*.png | pictures/*.webp)
+        type_want=image/${f##*.}
+        type_got=$(tr -d '\r' <"$headers" | awk 'tolower($1) == "content-type:" { print tolower($2) }' | tail -n 1)
+        type_got=${type_got%%;*}
+        [ "$type_got" = "$type_want" ] || { echo "publish: $public/$(target "$f") is served as '${type_got:-no type}', not $type_want" >&2; exit 1; } ;;
+    esac
+    echo "published: $public/$(target "$f") ($want${type_want:+, $type_want})"
+    type_want=
 done

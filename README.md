@@ -269,6 +269,13 @@ them as artifact `pictures`. The `report` job (`verdicts.mjs clean --pictures --
 hub-log `pictures/<sha256>.<ext>`. The `sign` job (`pictures.mjs stage`) takes the pictures the Worker's export names (`icon.file`, `screenshots[].file`)
 from there, checks them again, and `publish.sh` uploads them first of all to `https://cdn.wolos.org/plugins/pictures/<sha256>.<ext>`. A file that is not
 a listed picture name is refused; a picture that is missing or changed is left out and named in the log. No image ever goes through the Worker.
+The signed index names them: `pictures.mjs stage` runs before `build-index.mjs --pictures work/out/pictures`, and each entry carries
+`description` (the package's text, 1 to 4000 characters, no control character but tab and line breaks), `icon` (one file name
+`<sha256>.<png|webp>`, the extension from the picture's type) and `screenshots` (1 to 8 such names), only for pictures whose exact bytes are in that folder (hash, size, type, pixel size checked again); a bad one is left out
+with a notice, never the entry. A client reads a picture at `https://cdn.wolos.org/plugins/pictures/<file>`, the name exactly as the index gives it. The CDN gives its type
+from the name (wolos-cdn `bucket.rs` `serve`, tower-http `ServeFile`: `.png` image/png, `.webp` image/webp, always `nosniff`; `cdn-put` uploads
+parts as `application/octet-stream` and has no type of its own), and `publish.sh` reads each picture back and stops, before `index.json`
+goes up, when it is served with another type (`scripts/mock-cdn.mjs` stands in for the CDN in `test.sh`).
 
 `woltrust` (the woltrust crate of wolos, `src/bin/woltrust.rs`, `tools/woltrust.rev` = `68b5a03`, `tools/woltrust.sha256`, branch `wave3/trust-core`):
 - `woltrust sign --purpose index|revocation --cert SERIAL --key-env NAME --passphrase-env WOLOS_KEY_PASSPHRASE FILE` prints the `.wsig`

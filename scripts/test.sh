@@ -13,7 +13,8 @@ root=$(cd "$here/.." && pwd)
 fx=$root/fixtures
 work=$(mktemp -d "${TMPDIR:-/tmp}/hub-pipeline-test.XXXXXX")
 mock_pid=
-cleanup() { [ -z "$mock_pid" ] || kill "$mock_pid" 2>/dev/null || true; rm -rf "$work"; }
+cdn_pid=
+cleanup() { for p in $mock_pid $cdn_pid; do kill "$p" 2>/dev/null || true; done; rm -rf "$work"; }
 trap cleanup EXIT
 export HUB_NOW=1793750400   # 2026-11-04 in Unix seconds: fixed, so every output is the same every time
 export HUB_TEST=1
@@ -76,6 +77,22 @@ i = base(); i.extensions[0].findings = []; must("flag without findings", i, "fin
 i = base(); i.apps[0].surprise = 1; must("unknown field", i, "not a known field");
 i = base(); i.expires = i.issued + 30 * 86400; must("expiry far away", i, "7 days");
 i = base(); delete i.serial; must("no serial", i, "serial");
+// the listing's description and pictures (HUB-index-pics): bounded text, pictures by their CDN file name <sha256>.<png|webp>
+const sha = "3e0b5d9543783976039d0ab01171bb8b08c8fdc113b2891f467f6d0e7e0667f8", pic = `${sha}.png`;
+i = base(); i.apps[0].description = "Notes.\nTabs\tand lines are fine."; i.apps[0].icon = pic; i.apps[0].screenshots = [pic, pic]; i.plugins[0].icon = pic;
+{ const r = checkIndex(i, { bytes: 1000 }); console.log(`${r.errors.length ? "FAIL" : "ok  "} index with description, icon and screenshots is valid ${r.errors.join("; ")}`); n++; if (r.errors.length) failed++; }
+i = base(); i.apps[0].description = "x".repeat(4001); must("a description over 4000 characters", i, "description");
+i = base(); i.apps[0].description = "a\u0000b"; must("a description with a control character", i, "description");
+i = base(); i.apps[0].description = "a\u0085b"; must("a description with a C1 control (NEL), as the Rust readers refuse it", i, "description");
+i = base(); i.apps[0].description = ""; must("an empty description", i, "description");
+i = base(); i.apps[0].icon = "https://cdn.wolos.org/plugins/pictures/x.png"; must("an icon that is not a picture file name", i, "icon");
+i = base(); i.apps[0].icon = sha; must("a bare sha256 icon (the file name carries the type)", i, "icon");
+i = base(); i.apps[0].icon = `${sha}.gif`; must("an icon of another type", i, "icon");
+i = base(); i.apps[0].icon = { sha256: pic, mime: "image/png" }; must("an icon object (the index carries the sha256 only)", i, "icon");
+i = base(); i.apps[0].screenshots = Array(9).fill(pic); must("nine screenshots", i, "screenshots");
+i = base(); i.apps[0].screenshots = [pic.toUpperCase()]; must("a screenshot that is not a lowercase file name", i, "screenshots");
+i = base(); i.apps[0].screenshots = [`${sha}.webp/../x`]; must("a screenshot name with a path", i, "screenshots");
+i = base(); i.apps[0].screenshots = []; must("an empty screenshot list (left out instead)", i, "screenshots");
 const rl = { format: 1, serial: 1, issued: 1, expires: 2, entries: [{ serial: "b0b00000000000ad", at: 1, reason: "key-compromise" }] };
 for (const [name, mut, text] of [["bad reason", (l) => { l.entries[0].reason = "oops"; }, "reason"], ["bad serial", (l) => { l.entries[0].serial = "123"; }, "serial"], ["extra key", (l) => { l.entries[0].note = "x"; }, "not a known field"], ["twice", (l) => { l.entries.push({ ...l.entries[0] }); }, "twice"]]) {
   const l = structuredClone(rl); mut(l); const hit = checkRevoked(l).some((e) => e.includes(text));
@@ -208,6 +225,23 @@ node "$here/build-revoked.mjs" --source "$fx/revocations.json" --previous "$fx/p
 node "$here/build-index.mjs" --export "$work/export.checked.json" --revoked "$out/revoked.json" --revoked-url https://cdn.wolos.org/plugins/revoked.json --previous "$fx/previous-index.json" --out "$out/index.json" >/dev/null
 node "$here/validate.mjs" index "$out/index.json" --revoked "$out/revoked.json" --now "$HUB_NOW" >/dev/null && ok "index.json valid (schema and rules)" || bad "index.json"
 node "$here/validate.mjs" revoked "$out/revoked.json" >/dev/null && ok "revoked.json valid" || bad "revoked.json"
+# the listing's description and pictures reach the index (HUB-index-pics): icon and screenshots as <sha256>.<ext>, only the
+# pictures staged for the CDN (pictures.mjs stage, re-checked here by hash, size and header), the description as text
+node -e 'const f=require("fs");const e=JSON.parse(f.readFileSync(process.argv[1]));const p=JSON.parse(f.readFileSync(process.argv[2])).apps[0];const a=e.apps[0];a.description="Quick notes.\nThey stay on your computer.";a.icon=p.icon;a.screenshots=[...p.screenshots,{...p.icon,sha256:"c".repeat(64),file:"c".repeat(64)+".png"}];e.plugins[0].description="x".repeat(4001);e.plugins[0].icon={...p.icon,file:p.icon.sha256+".webp"};f.writeFileSync(process.argv[3],JSON.stringify(e))' "$work/export.checked.json" "$work/export-pics.json" "$work/export-desc.json"
+node "$here/build-index.mjs" --export "$work/export-desc.json" --revoked "$out/revoked.json" --revoked-url https://cdn.wolos.org/plugins/revoked.json --previous "$fx/previous-index.json" --pictures "$work/stage" --out "$work/index-pics.json" >/dev/null 2>"$work/index-pics.err"
+pics=$(node -e 'const i=JSON.parse(require("fs").readFileSync(process.argv[1]));const a=i.apps[0],p=i.plugins[0];console.log([a.description,a.icon,(a.screenshots||[]).join(","),Object.keys(a).slice(0,7).join("+"),p.id,"description" in p,"icon" in p].join("|"))' "$work/index-pics.json" 2>&1)
+[ "$pics" = "$(printf 'Quick notes.\nThey stay on your computer.')|95d648d3d175b7df65af3f36caacaacc448897768f22945b5637685a8d5242f6.png|3e0b5d9543783976039d0ab01171bb8b08c8fdc113b2891f467f6d0e7e0667f8.png|id+name+version+summary+description+icon+screenshots|alice.weather|false|false" ] \
+    && ok "build-index --pictures: description, icon and screenshots (file names <sha256>.png) for the staged pictures only; an unstaged screenshot, a 4001-character description and an icon whose file name lies are left out, the entries stay" || bad "index pictures: $pics $(cat "$work/index-pics.err")"
+node -e 'const f=require("fs");const e=JSON.parse(f.readFileSync(process.argv[1]));e.apps[0].description="one\u0085two";e.plugins[0].description="caf\u00e9\ttab";f.writeFileSync(process.argv[2],JSON.stringify(e))' "$work/export-desc.json" "$work/export-nel.json"
+node "$here/build-index.mjs" --export "$work/export-nel.json" --revoked "$out/revoked.json" --revoked-url https://cdn.wolos.org/plugins/revoked.json --previous "$fx/previous-index.json" --out "$work/index-nel.json" >/dev/null 2>"$work/index-nel.err"
+node -e 'const i=JSON.parse(require("fs").readFileSync(process.argv[1]));process.exit(i.apps.length===1&&!("description" in i.apps[0])&&i.plugins[0].description==="caf\u00e9\ttab"?0:1)' "$work/index-nel.json" && grep -q "alice.notes: the description" "$work/index-nel.err" && ok "build-index: a description with U+0085 (a C1 control) is left out with a notice, the entry stays; accents and tabs pass" || bad "index NEL: $(cat "$work/index-nel.err")"
+node "$here/validate.mjs" index "$work/index-pics.json" --revoked "$out/revoked.json" --now "$HUB_NOW" >/dev/null && ok "the index with pictures is valid (schema and rules)" || bad "index with pictures invalid"
+node "$here/build-index.mjs" --export "$work/export-desc.json" --revoked "$out/revoked.json" --revoked-url https://cdn.wolos.org/plugins/revoked.json --previous "$fx/previous-index.json" --out "$work/index-nopics.json" >/dev/null 2>&1
+node -e 'const a=JSON.parse(require("fs").readFileSync(process.argv[1])).apps[0];process.exit(a.description&&!("icon" in a)&&!("screenshots" in a)?0:1)' "$work/index-nopics.json" && ok "build-index without --pictures: the description, no picture (nothing was staged for the CDN)" || bad "index without --pictures"
+cp -r "$work/stage" "$work/stage-bad"; printf x >>"$work/stage-bad/3e0b5d9543783976039d0ab01171bb8b08c8fdc113b2891f467f6d0e7e0667f8.png"
+node "$here/build-index.mjs" --export "$work/export-desc.json" --revoked "$out/revoked.json" --revoked-url https://cdn.wolos.org/plugins/revoked.json --previous "$fx/previous-index.json" --pictures "$work/stage-bad" --out "$work/index-badpic.json" >/dev/null 2>&1
+node -e 'const a=JSON.parse(require("fs").readFileSync(process.argv[1])).apps[0];process.exit(a.icon&&!("screenshots" in a)?0:1)' "$work/index-badpic.json" && ok "build-index --pictures: a staged picture whose bytes changed is not named" || bad "index with a changed picture"
+node --input-type=module -e 'const {buildIndex}=await import(process.argv[1]);const fs=await import("node:fs");const e=JSON.parse(fs.readFileSync(process.argv[2]));const p=JSON.parse(fs.readFileSync(process.argv[3])).apps[0].icon;e.apps[0].screenshots=Array.from({length:9},(_,k)=>({...p,sha256:String(k).repeat(64),file:String(k).repeat(64)+".png"}));const {index}=buildIndex(e,{serial:2,now:1793750400,revoked:{url:"https://cdn.wolos.org/plugins/revoked.json",sha256:"a".repeat(64),serial:1},pictureOk:()=>true});process.exit(index.apps.length===1&&index.apps[0].screenshots.length===8&&index.apps[0].screenshots[7]==="7".repeat(64)+".png"?0:1)' "file://$here/build-index.mjs" "$work/export.checked.json" "$work/export-pics.json" && ok "build-index: nine verified screenshots are cut to the first eight (the schema's bound), the entry stays" || bad "nine screenshots"
 printf '{"version":"0.13.0","kernel":"7.0.0"}\n' >"$out/release.json"
 "$here/sign-files.sh" "$out" "$INDEX_SERIAL" >/dev/null && ok "signed by the real woltrust: .sig (legacy), .wsig (hybrid), revoked.json.wsig, both verified" || bad "signing"
 # trust phase 4 (woltrust 68b5a03): the revocation database, its checkpoint, the intermediates file, the release manifest signature
@@ -247,6 +281,22 @@ rm -rf "$work/out-pics"; cp -r "$out" "$work/out-pics"; cp -r "$work/stage" "$wo
 DRY_RUN=1 "$here/publish.sh" "$work/out-pics" >"$work/publish-pics.txt" && [ "$(grep -c 'to plugins/pictures/[0-9a-f]\{64\}\.png ' "$work/publish-pics.txt")" = 2 ] && [ "$(grep -n 'plugins/pictures/' "$work/publish-pics.txt" | tail -n1 | cut -d: -f1)" = 2 ] && ok "upload plan (dry run): the 2 pictures go to plugins/pictures/<sha256>.png before everything else" || bad "publish pictures: $(cat "$work/publish-pics.txt")"
 echo x >"$work/out-pics/pictures/notes.txt"
 expect_fail "publish.sh with a file in pictures/ that is not <sha256>.png|webp" env DRY_RUN=1 "$here/publish.sh" "$work/out-pics"
+# a real upload through the pinned cdn-put to a local stand-in of the CDN (mock-cdn.mjs, which types files by extension
+# like wolos-cdn's ServeFile): every file read back byte for byte, and each picture must come back as image/png or image/webp
+rm -f "$work/out-pics/pictures/notes.txt"; printf 'RIFF\0\0\0\0WEBPVP8 test' >"$work/webp.bin"
+cp "$work/webp.bin" "$work/out-pics/pictures/$(sha256sum "$work/webp.bin" | cut -c1-64).webp"
+start_cdn() { node "$here/mock-cdn.mjs" --port 18790 --token cdn-test-token "$@" >"$work/mock-cdn.log" 2>&1 & cdn_pid=$!; for _ in $(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:18790/ 2>/dev/null && break; sleep 0.1; done; }
+stop_cdn() { kill "$cdn_pid" 2>/dev/null || true; wait "$cdn_pid" 2>/dev/null || true; cdn_pid=; }
+start_cdn
+DRY_RUN=0 WOLOS_CDN_UPLOAD_TOKEN=cdn-test-token CDN_BASE=http://127.0.0.1:18790 CDN_PUBLIC=http://127.0.0.1:18790 "$here/publish.sh" "$work/out-pics" >"$work/publish-up.txt" 2>"$work/publish-up.err" \
+    && [ "$(grep -c '^published: http://127.0.0.1:18790/plugins/pictures/[0-9a-f]\{64\}\.png (.*, image/png)$' "$work/publish-up.txt")" = 2 ] \
+    && [ "$(grep -c '^published: http://127.0.0.1:18790/plugins/pictures/[0-9a-f]\{64\}\.webp (.*, image/webp)$' "$work/publish-up.txt")" = 1 ] \
+    && grep -q '^published: http://127.0.0.1:18790/plugins/index.json ([0-9a-f]\{64\})$' "$work/publish-up.txt" \
+    && ok "publish.sh through the pinned cdn-put: every file read back, the PNGs as image/png and the WebP as image/webp" || bad "publish upload: $(cat "$work/publish-up.txt" "$work/publish-up.err")"
+stop_cdn; start_cdn --png-type application/octet-stream
+if DRY_RUN=0 WOLOS_CDN_UPLOAD_TOKEN=cdn-test-token CDN_BASE=http://127.0.0.1:18790 CDN_PUBLIC=http://127.0.0.1:18790 "$here/publish.sh" "$work/out-pics" >/dev/null 2>"$work/publish-type.err"; then bad "publish.sh accepted a picture served as application/octet-stream"
+else grep -q "is served as 'application/octet-stream', not image/png" "$work/publish-type.err" && ok "publish.sh stops when the CDN serves a picture with another type (before index.json goes up)" || bad "publish type: $(cat "$work/publish-type.err")"; fi
+stop_cdn
 expect_fail "commit-log refuses a path outside the published ones" env HUB_LOG_DIR=/nonexistent "$here/commit-log.sh" "x" README.md
 # the checkpoint is published at the root of the log too (cdn.rs RKDB_CHECKPOINTS); commit-log.sh lets it through
 ( cd "$work" && rm -rf logck && git init -q logck && cd logck && git remote add origin git@github.com:wonderlandos/hub-log.git && printf '{}' >revoked.checkpoint.json && GIT_SSH_COMMAND=false HUB_LOG_DIR=. "$here/commit-log.sh" "ck" revoked.checkpoint.json >/dev/null 2>&1; [ "$(git -C "$work/logck" log -1 --format=%s 2>/dev/null)" = ck ] ) && ok "commit-log.sh takes revoked.checkpoint.json at the root (committed; only the push to GitHub is missing here)" || bad "commit-log checkpoint path"

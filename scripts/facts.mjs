@@ -16,7 +16,7 @@ export const MAX_SCREENSHOTS = 8;
 export const MAX_PICTURE = 2 * 1024 * 1024;
 const MIMES = { "image/png": "png", "image/webp": "webp" };
 const HEX64 = /^[0-9a-f]{64}$/;
-const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/; // C1 too, as the Worker and the Rust readers
 const PATH_CONTROL = /[\u0000-\u001f\u007f]/;
 
 const text = (v, max, oneLine) => {

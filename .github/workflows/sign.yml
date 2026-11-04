@@ -128,15 +128,16 @@ jobs:
           mkdir -p work/out
           [ -f log/revocations.json ] || echo '{"format":1,"entries":[]}' > log/revocations.json
           node scripts/build-revoked.mjs --source log/revocations.json --previous log/signed/revoked.json --out work/out/revoked.json
+          # The pictures first: the index names only the icons and screenshots staged here (and publish.sh uploads them before it).
+          node scripts/pictures.mjs stage --export work/export.checked.json --from log/pictures --out work/out/pictures
           extra=(); [ "$FORCE" != 1 ] || extra+=(--force)
           # Release statements once the pinned woltrust signs them (tools/woltrust.features: statements).
           ! grep -qx statements <(sed 's/#.*//; s/ //g' tools/woltrust.features) || extra+=(--statements work/out/statements --statements-url https://cdn.wolos.org/plugins/statements)
           node scripts/build-index.mjs --export work/export.checked.json --revoked work/out/revoked.json \
             --revoked-url "https://cdn.wolos.org/plugins/revoked.json" --previous log/signed/index.json \
-            --intermediates log/certs/intermediates --certs log/certs --revocations log/revocations.json --out work/out/index.json "${extra[@]}"
+            --intermediates log/certs/intermediates --certs log/certs --revocations log/revocations.json --pictures work/out/pictures --out work/out/index.json "${extra[@]}"
           node scripts/validate.mjs index work/out/index.json --revoked work/out/revoked.json
           node scripts/validate.mjs revoked work/out/revoked.json
-          node scripts/pictures.mjs stage --export work/export.checked.json --from log/pictures --out work/out/pictures
 
       - name: Does anything need publishing
         id: need
