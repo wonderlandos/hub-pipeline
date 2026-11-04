@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# check: look at every release that has no verdict yet (ADR 0047). No secret of any kind: the only proof of who
+# runs is the OIDC token GitHub gives the job, which the Worker checks (repository, this workflow file on main,
+# environment check, audience hub.wolos.org). The Worker's I9 refuses any other workflow, branch, environment
+# or a pull request.
+#
+# Three jobs, so the one that opens untrusted files has no token to lose:
+#   fetch   asks the Worker what is pending                        (OIDC token)
+#   scan    downloads each release file, checks size and sha256, runs hubcheck   (NO token, no write right)
+#   report  posts the verdicts and commits them to verdicts/       (OIDC token; reads only the scan's JSON, validated)
+name: check
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# A run that is still going is never cut short, and a new one waits: two reports of the same release help nobody.
+concurrency:
+  group: hub-index-check
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  fetch:
+    # Scheduled runs wait until the pipeline is switched on (repository variable HUB_PIPELINE_ENABLED=true).
+    if: github.event_name != 'schedule' || vars.HUB_PIPELINE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: check
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      count: ${{ steps.pending.outputs.count }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Ask the Worker what is pending
+        id: pending
+        run: |
+          node scripts/api.mjs pending --out pending.json
+          echo "count=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("pending.json")).releases.length)')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pending
+          path: pending.json
+          retention-days: 3
+
+  scan:
+    needs: fetch
+    if: needs.fetch.outputs.count != '0'
+    runs-on: ubuntu-latest
+    # A 1 GiB file, a slow download and 120 seconds of checker per file: an hour is more than enough.
+    timeout-minutes: 60
+    # No id-token, no environment, nothing but reading this repository: whatever hubcheck meets, there is no token to take.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: pending
+      - name: Build the pinned hubcheck
+        id: tool
+        run: |
+          # TODO(ADR 0047): tools/hubcheck.rev is "unpinned" until HUB-wasm ships wasm/bin/hubcheck. Until then the job stops here
+          # and nothing is posted: a release is never decided without the checker (check-release.mjs would say not-checked).
+          echo "bin=$(scripts/tool.sh hubcheck)" >> "$GITHUB_OUTPUT"
+      - name: Fetch and check every pending release
+        env:
+          HUBCHECK_BIN: ${{ steps.tool.outputs.bin }}
+        run: node scripts/check-release.mjs --pending pending.json --out verdicts.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verdicts
+          path: verdicts.json
+          retention-days: 3
+
+  report:
+    needs: scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: check
+    permissions:
+      contents: write   # the public log: verdicts/<id>/<version>.json
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: pending
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: verdicts
+      - name: Keep only what the Worker takes, only for pending releases
+        run: node scripts/verdicts.mjs clean --pending pending.json --verdicts verdicts.json --out clean.json
+      - name: Post the verdicts
+        run: node scripts/api.mjs verdicts --in clean.json
+      - name: Write them to the public log
+        env:
+          RUN: ${{ github.run_id }}.${{ github.run_attempt }}
+          SHA: ${{ github.workflow_sha }}
+        run: |
+          node scripts/verdicts.mjs log --verdicts clean.json --dir verdicts --run "$RUN" --workflow-sha "$SHA"
+          scripts/commit-log.sh "verdicts: run $RUN" verdicts

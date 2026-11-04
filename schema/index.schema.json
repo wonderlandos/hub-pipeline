@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wonderlandos/hub-index/blob/main/schema/index.schema.json",
+  "title": "WolOS Hub index, format 1 (extended)",
+  "description": "ADR 0047. Today's plugin index (format 1: format, serial, expires, plugins[]) keeps its fields and meaning; everything below is added. The 0.12 reader ignores unknown keys and drops an entry that breaks its own rules, so a hub index parses there unchanged. Times are Unix seconds. index.json.sig is the legacy Ed25519 signature over the same bytes, index.json.wsig the hybrid one (label wolos/index/1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "serial", "issued", "expires", "apps", "plugins", "extensions"],
+  "properties": {
+    "format": { "const": 1 },
+    "serial": { "type": "integer", "minimum": 1, "description": "Grows with every publication; a lower serial never replaces a higher one." },
+    "issued": { "type": "integer", "minimum": 1 },
+    "expires": { "type": "integer", "minimum": 1, "description": "issued + 7 days; re-signed at least daily." },
+    "generated": { "type": "integer", "minimum": 1, "description": "When the Worker built the export this index comes from." },
+    "apps": { "type": "array", "maxItems": 5000, "items": { "$ref": "#/$defs/app" } },
+    "plugins": { "type": "array", "maxItems": 5000, "items": { "$ref": "#/$defs/plugin" } },
+    "extensions": { "type": "array", "maxItems": 5000, "items": { "$ref": "#/$defs/extension" } },
+    "intermediates": {
+      "type": "array", "maxItems": 8,
+      "description": "Intermediate certificates (.wolcert objects, ADR 0046) newer than the image's trust store.",
+      "items": { "type": "object" }
+    },
+    "revoked": {
+      "type": "object", "additionalProperties": false,
+      "required": ["url", "sha256", "serial"],
+      "description": "Where the revocation list of this publication is, and which one it is.",
+      "properties": {
+        "url": { "type": "string", "pattern": "^https://[^\\s/]+/\\S{1,400}$" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "serial": { "type": "integer", "minimum": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "line": { "type": "string", "maxLength": 200, "pattern": "^[^\\u0000-\\u001f\\u007f]*$" },
+    "assetUrl": {
+      "type": "string", "maxLength": 512,
+      "pattern": "^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/releases/download/[^/\\s]+/[^/\\s]+$",
+      "description": "A GitHub release asset: artefacts are never hosted by WolOS."
+    },
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rule", "sentence"],
+      "properties": {
+        "rule": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "sentence": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "evidence": { "type": "string", "maxLength": 1000 }
+      }
+    },
+    "entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "version", "summary", "author", "license", "url", "sha256", "size", "trust", "verdict", "findings", "owner", "source", "first_seen", "yanked"],
+      "properties": {
+        "id": { "type": "string", "minLength": 3, "maxLength": 64, "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[^\\u0000-\\u001f\\u007f]*$" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9._,+~-]*$" },
+        "summary": { "$ref": "#/$defs/line" },
+        "author": { "$ref": "#/$defs/line" },
+        "license": { "type": "string", "maxLength": 64, "pattern": "^[^\\u0000-\\u001f\\u007f]*$", "description": "SPDX expression." },
+        "url": { "$ref": "#/$defs/assetUrl" },
+        "sha256": { "$ref": "#/$defs/sha256", "description": "Of the release asset, pinned at the first check. A different file at the same URL is refused." },
+        "size": { "type": "integer", "minimum": 1, "maximum": 1073741824 },
+        "trust": { "enum": ["wolos", "verified", "community"] },
+        "cert": { "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "Serial of the leaf certificate that signed the file (trust wolos or verified)." },
+        "verdict": { "enum": ["pass", "flag"], "description": "block and not-checked releases are never listed." },
+        "findings": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/finding" } },
+        "owner": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "github_id", "login"],
+          "properties": {
+            "kind": { "enum": ["person", "org", "wolos"] },
+            "github_id": { "type": "integer", "minimum": 1 },
+            "login": { "type": "string", "minLength": 1, "maxLength": 39, "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$" }
+          }
+        },
+        "source": {
+          "type": "object", "additionalProperties": false,
+          "required": ["repo", "repo_id", "tag"],
+          "properties": {
+            "repo": { "type": "string", "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" },
+            "repo_id": { "type": "integer", "minimum": 1 },
+            "tag": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[^/\\s]+$" },
+            "commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" }
+          }
+        },
+        "first_seen": { "type": "integer", "minimum": 1 },
+        "yanked": { "type": "boolean" },
+        "kinds": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Plugins only; today's field, read by 0.12." },
+        "permissions": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Plugins only; today's field, shown before Install." },
+        "min_wolos": { "type": "string", "pattern": "^([0-9]{1,4}\\.[0-9]{1,4}(\\.[0-9]{1,4})?)?$" },
+        "capabilities": { "type": "array", "maxItems": 64, "items": { "type": "string" }, "description": "Apps only." },
+        "categories": { "type": "array", "maxItems": 8, "items": { "type": "string" }, "description": "Apps only." },
+        "host": { "type": "string", "description": "Extensions only: the app id it extends." }
+      }
+    },
+    "app": {
+      "allOf": [
+        { "$ref": "#/$defs/entry" },
+        { "properties": { "url": { "pattern": "\\.wol$" }, "host": false, "kinds": false, "permissions": false } }
+      ]
+    },
+    "plugin": {
+      "allOf": [
+        { "$ref": "#/$defs/entry" },
+        { "properties": { "url": { "pattern": "\\.wolplug$" }, "host": false, "capabilities": false, "categories": false } }
+      ]
+    },
+    "extension": {
+      "allOf": [
+        { "$ref": "#/$defs/entry" },
+        { "required": ["host"], "properties": { "host": { "type": "string", "minLength": 3, "maxLength": 64 }, "kinds": false, "permissions": false, "capabilities": false, "categories": false } }
+      ]
+    }
+  }
+}

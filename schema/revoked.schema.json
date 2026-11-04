@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wonderlandos/hub-index/blob/main/schema/revoked.schema.json",
+  "title": "WolOS revocation list, format 1 (ADR 0046, woltrust revoked.rs)",
+  "description": "The signed bytes of revoked.json. The woltrust reader refuses unknown keys, so this schema does too. Unix seconds. expires = issued + 7 days.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "serial", "issued", "expires", "entries"],
+  "properties": {
+    "format": { "const": 1 },
+    "serial": { "type": "integer", "minimum": 1 },
+    "issued": { "type": "integer", "minimum": 1 },
+    "expires": { "type": "integer", "minimum": 1 },
+    "entries": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["serial", "at", "reason"],
+        "properties": {
+          "serial": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+          "at": { "type": "integer", "minimum": 1 },
+          "reason": { "enum": ["key-compromise", "abuse", "superseded", "ceased"] }
+        }
+      }
+    }
+  }
+}

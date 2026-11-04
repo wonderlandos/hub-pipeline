@@ -1,0 +1,141 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# sign: build the index from the Worker's export, sign it with the Index intermediate, upload it, and commit the
+# published files to signed/ as the public log (ADR 0047, ADR 0046). This is the only workflow that holds the
+# signing keys and the upload token, and it parses no release file: it reads the Worker's JSON, checks it against
+# schema/index.schema.json and checks each new entry against GitHub itself.
+#
+# Environment "sign" holds (names only, values live in the environment's secrets and never in git):
+#   secrets  WOLOS_INDEX_SIGNING_KEY    the Index intermediate's key material, for woltrust
+#            WOLOS_LEGACY_INDEX_KEY     the legacy Ed25519 key of the 0.12 index (PEM, PKCS#8)
+#            WOLOS_CDN_UPLOAD_TOKEN     the CDN upload token (cdn-put's UPLOAD_TOKEN)
+#   vars     INDEX_CERT_SERIAL          serial of the Index intermediate's certificate (16 hex)
+#            CDN_BASE (optional)        the upload server, if not cdn-put's own default
+#
+# Manual runs default to a DRY RUN: test keys, stand-in woltrust, nothing uploaded, nothing committed; the result
+# is kept as a run artifact. Set dry_run=false to publish.
+name: sign
+
+on:
+  schedule:
+    - cron: "20 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: test keys, no upload, no commit (default)"
+        type: boolean
+        default: true
+      fixtures:
+        description: "Dry run only: take fixtures/ instead of asking the Worker"
+        type: boolean
+        default: false
+      force:
+        description: "Sign and publish even when nothing changed or the new index is much smaller"
+        type: boolean
+        default: false
+
+# Shares nothing with check on purpose; the commit step rebases over its pushes.
+concurrency:
+  group: hub-index-sign
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  sign:
+    if: github.event_name != 'schedule' || vars.HUB_PIPELINE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: sign
+    permissions:
+      contents: write   # signed/ (the public log)
+      id-token: write   # the Worker's export
+    env:
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
+      FIXTURES: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && inputs.fixtures && '1' || '0' }}
+      FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && '1' || '0' }}
+      CDN_BASE: ${{ vars.CDN_BASE }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Check the scripts and fixtures first
+        run: scripts/test.sh
+
+      - name: Build woltrust (pinned)
+        if: env.DRY_RUN != '1'
+        id: woltrust
+        run: |
+          # TODO(ADR 0046): tools/woltrust.rev is "unpinned" until the woltrust crate has its command line; a real run stops here.
+          echo "bin=$(scripts/tool.sh woltrust)" >> "$GITHUB_OUTPUT"
+
+      - name: Get the export
+        run: |
+          mkdir -p work
+          if [ "$FIXTURES" = 1 ]; then cp fixtures/export.json work/export.json
+          else node scripts/api.mjs export --out work/export.json; fi
+
+      - name: Check each new entry against GitHub
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HUB_TEST: ${{ env.FIXTURES }}
+        run: |
+          if [ "$FIXTURES" = 1 ]; then
+            node scripts/verify-owners.mjs --export work/export.json --previous signed/index.json --fixture fixtures/github.json --out work/export.checked.json
+          else
+            node scripts/verify-owners.mjs --export work/export.json --previous signed/index.json --out work/export.checked.json
+          fi
+
+      - name: Build revoked.json and index.json
+        run: |
+          mkdir -p work/out
+          [ -f revocations.json ] || echo '{"format":1,"entries":[]}' > revocations.json
+          node scripts/build-revoked.mjs --source revocations.json --previous signed/revoked.json --out work/out/revoked.json
+          force=; [ "$FORCE" = 1 ] && force=--force
+          node scripts/build-index.mjs --export work/export.checked.json --revoked work/out/revoked.json \
+            --revoked-url "https://cdn.wolos.org/plugins/revoked.json" --previous signed/index.json \
+            --intermediates certs/intermediates --out work/out/index.json $force
+          node scripts/validate.mjs index work/out/index.json --revoked work/out/revoked.json
+          node scripts/validate.mjs revoked work/out/revoked.json
+
+      - name: Does anything need publishing
+        id: need
+        run: |
+          force=; [ "$FORCE" = 1 ] && force=--force
+          answer=$(node scripts/needs-publish.mjs --index work/out/index.json --revoked work/out/revoked.json --previous signed $force)
+          echo "$answer"
+          echo "publish=${answer%% *}" >> "$GITHUB_OUTPUT"
+
+      - name: Sign (legacy Ed25519 and hybrid)
+        if: steps.need.outputs.publish == 'yes'
+        env:
+          WOLTRUST_BIN: ${{ steps.woltrust.outputs.bin }}
+          WOLOS_INDEX_SIGNING_KEY: ${{ secrets.WOLOS_INDEX_SIGNING_KEY }}
+          WOLOS_LEGACY_INDEX_KEY: ${{ secrets.WOLOS_LEGACY_INDEX_KEY }}
+          CERT: ${{ vars.INDEX_CERT_SERIAL }}
+        run: |
+          # In a dry run the stand-in signs with test keys and these secrets are not read.
+          if [ "$DRY_RUN" = 1 ]; then CERT=${CERT:-7e57000000000001}; fi
+          scripts/sign-files.sh work/out "${CERT:?the variable INDEX_CERT_SERIAL is not set in the sign environment}"
+
+      - name: Upload to the CDN
+        if: steps.need.outputs.publish == 'yes'
+        env:
+          WOLOS_CDN_UPLOAD_TOKEN: ${{ secrets.WOLOS_CDN_UPLOAD_TOKEN }}
+        run: scripts/publish.sh work/out
+
+      - name: Commit the published files to signed/
+        if: steps.need.outputs.publish == 'yes' && env.DRY_RUN != '1'
+        run: |
+          mkdir -p signed
+          cp work/out/index.json work/out/index.json.sig work/out/index.json.wsig work/out/revoked.json work/out/revoked.json.wsig signed/
+          serial=$(node -p 'require("./signed/index.json").serial')
+          counts=$(node -p 'const i=require("./signed/index.json");i.apps.length+" apps, "+i.plugins.length+" plugins, "+i.extensions.length+" extensions"')
+          scripts/commit-log.sh "index $serial: $counts; revoked $(node -p 'require("./signed/revoked.json").serial')" signed
+
+      - name: Keep the dry run
+        if: always() && env.DRY_RUN == '1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dry-run-TEST-ONLY-never-publish
+          path: work/out
+          if-no-files-found: ignore
+          retention-days: 3

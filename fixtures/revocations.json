@@ -1,0 +1,6 @@
+{
+  "format": 1,
+  "entries": [
+    { "serial": "b0b00000000000ad", "at": 1793600000, "reason": "key-compromise" }
+  ]
+}
