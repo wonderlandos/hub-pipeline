@@ -27,7 +27,7 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { die, jsonText, parseArgs, readJson, sha256Hex, writeAtomic } from "./lib.mjs";
+import { die, jsonText, parseArgs, readJson, sha256Hex, writeAtomic, isSerial } from "./lib.mjs";
 import { readFileSync } from "node:fs";
 
 const MAX_ASSET = Number(process.env.MAX_ASSET ?? 1 << 30);
@@ -75,7 +75,7 @@ export function cleanOutput(text) {
   // From the trust crate behind hubcheck (I7): what the signature is worth and who signed. The Worker stores them
   // with the verdict (HUB-worker-2); verdicts.mjs passes them through.
   if (TRUST.includes(o.trust)) out.trust = o.trust;
-  if (typeof o.cert?.serial === "string" && /^[0-9a-f]{16}$/.test(o.cert.serial)) out.cert = o.cert.serial;
+  if (isSerial(o.cert?.serial)) out.cert = o.cert.serial;
   // What the file says it is (hubcheck a0fcf58+: Info.json / plugin.toml / extension.toml); checked against the listing below.
   if (o.file && typeof o.file.id === "string") out.file = { id: o.file.id, ...(typeof o.file.version === "string" ? { version: o.file.version } : {}) };
   return out;

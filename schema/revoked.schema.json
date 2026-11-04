@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/wonderlandos/hub-log/blob/main/schema/revoked.schema.json",
   "title": "WolOS revocation list, format 1 (ADR 0046, woltrust revoked.rs)",
-  "description": "The signed bytes of revoked.json. The woltrust reader refuses unknown keys, so this schema does too. Unix seconds. expires = issued + 7 days.",
+  "description": "The signed bytes of revoked.json. The woltrust reader refuses unknown keys, so this schema does too. Unix seconds. expires = issued + 24 hours (woltrust rkdb::LIFETIME; the list is republished hourly).",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "serial", "issued", "expires", "entries"],
@@ -17,7 +17,7 @@
         "type": "object", "additionalProperties": false,
         "required": ["serial", "at", "reason"],
         "properties": {
-          "serial": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+          "serial": { "type": "string", "pattern": "^([0-9a-f]{16}|[0-9a-f]{128})$", "description": "A certificate id (128 hex) or a 16-hex serial (a release statement, a certificate of before rule IDS)." },
           "at": { "type": "integer", "minimum": 1 },
           "reason": { "enum": ["key-compromise", "abuse", "superseded", "ceased", "withdrawn-version"], "description": "withdrawn-version: serial is a release statement's; only that version is withdrawn (written only when tools/woltrust.features has withdrawn-version)." }
         }

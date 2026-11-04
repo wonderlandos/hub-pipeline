@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { die, parseArgs, woltrustFeatures, writeAtomic } from "./lib.mjs";
+import { die, parseArgs, woltrustFeatures, writeAtomic, isSerial } from "./lib.mjs";
 
 export const LABEL = "wolos/release/1";
 const KIND = { apps: "package", plugins: "plugin", extensions: "extension" };
@@ -77,7 +77,7 @@ function sign(opts) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const { opts, rest } = parseArgs(process.argv.slice(2));
-    if (rest[0] !== "sign" || !opts.dir || !/^[0-9a-f]{16}$/.test(opts.cert ?? "") || !(opts["key-file"] || opts["key-env"])) die("usage: statements.mjs sign --dir DIR --cert SERIAL (--key-file F | --key-env NAME)", 2);
+    if (rest[0] !== "sign" || !opts.dir || !isSerial(opts.cert) || !(opts["key-file"] || opts["key-env"])) die("usage: statements.mjs sign --dir DIR --cert SERIAL (--key-file F | --key-env NAME)", 2);
     sign(opts);
   } catch (e) {
     die(e.message);

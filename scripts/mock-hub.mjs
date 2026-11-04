@@ -49,8 +49,20 @@ createServer((req, res) => {
       } catch {
         return deny(res, 400, "bad-json", "Send a JSON body.");
       }
-      if (!/^[0-9a-f]{16}$/.test(b.serial ?? "") || typeof b.cert !== "string" || typeof b.request_id !== "string" || !["origin", "trusted"].includes(b.tier)) return deny(res, 400, "bad-cert", "Send request_id, serial and cert.");
+      if (!/^([0-9a-f]{16}|[0-9a-f]{128})$/.test(b.serial ?? "") || typeof b.cert !== "string" || typeof b.request_id !== "string" || !["origin", "trusted"].includes(b.tier)) return deny(res, 400, "bad-cert", "Send request_id, serial and cert.");
       appendFileSync(opts.received, JSON.stringify({ issued: b.request_id, serial: b.serial, tier: b.tier }) + "\n");
+      return send(res, 200, { stored: true });
+    }
+    if (req.method === "POST" && url === "/api/pipeline/revocations") {
+      if (who !== "ca") return deny(res, 401, "pipeline-token", "The pipeline token was refused: wrong workflow.");
+      let b;
+      try {
+        b = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        return deny(res, 400, "bad-json", "Send a JSON body.");
+      }
+      if (typeof b.request_id !== "string" || !b.request_id.startsWith("v-") || !/^([0-9a-f]{16}|[0-9a-f]{128})$/.test(b.serial ?? "")) return deny(res, 400, "bad-revocation", "Send request_id (v-...) and serial.");
+      appendFileSync(opts.received, JSON.stringify({ revoked: b.request_id, serial: b.serial }) + "\n");
       return send(res, 200, { stored: true });
     }
     if (req.method === "POST" && url === "/api/pipeline/verdicts") {

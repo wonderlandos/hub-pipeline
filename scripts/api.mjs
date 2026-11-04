@@ -7,13 +7,15 @@
 //   api.mjs pending  --out pending.json        GET  /api/pipeline/pending   (check)
 //   api.mjs verdicts --in verdicts.json        POST /api/pipeline/verdicts  (check)
 //   api.mjs export   --out export.json         GET  /api/pipeline/export    (sign)
-//   api.mjs request  --id ID --out requests/ID.json   GET  /api/pipeline/requests/ID   (ca: an approved issue request)
+//   api.mjs request  --id ID --out requests/ID.json   GET  /api/pipeline/requests/ID   (ca: an approved issue request, or an
+//                                              approved revocation / version withdrawal when ID starts with v-)
 //   api.mjs issued   --in result.json          POST /api/pipeline/certs     (ca: {request_id, serial, tier, cert})
+//   api.mjs revoked  --id ID --serial S        POST /api/pipeline/revocations  (ca: the revocation ID of S is on revocations.json)
 //
 // HUB_API        base URL, default https://hub.wolos.org (https only; http://127.0.0.1 only with HUB_TEST=1)
 // HUB_TOKEN      a token to use as is (tests); otherwise one is requested from GitHub for this job
 // HUB_AUDIENCE   default hub.wolos.org
-import { readJson, writeAtomic, jsonText, parseArgs, die } from "./lib.mjs";
+import { readJson, writeAtomic, jsonText, parseArgs, die, isSerial } from "./lib.mjs";
 
 const AUDIENCE = process.env.HUB_AUDIENCE ?? "hub.wolos.org";
 const BASE = (process.env.HUB_API ?? "https://hub.wolos.org").replace(/\/+$/, "");
@@ -107,17 +109,26 @@ async function main() {
     if (!REQUEST_ID.test(opts.id)) throw new Error(`${opts.id}: not a request id`);
     const data = await call("GET", `/api/pipeline/requests/${opts.id}`);
     // The Worker answers with the request file itself; the ca workflow validates it against the schema next.
-    if (data.id !== opts.id || data.action !== "issue") throw new Error(`the answer is not the issue request ${opts.id}`);
+    // A v- id is a revocation (a certificate, or one version with reason withdrawn-version); every other id an issue request.
+    const want = opts.id.startsWith("v-") ? "revoke" : "issue";
+    if (data.id !== opts.id || data.action !== want) throw new Error(`the answer is not the ${want} request ${opts.id}`);
     writeAtomic(opts.out, jsonText(data));
-    process.stdout.write(`request ${opts.id}: ${data.kind} ${data.subject?.login}, approved by ${(data.approved_by ?? []).join(", ") || "nobody"}\n`);
+    if (want === "revoke") process.stdout.write(`revocation ${opts.id}: ${data.serial} (${data.reason}), approved by ${(data.approved_by ?? []).join(", ") || "nobody"}\n`);
+    else process.stdout.write(`request ${opts.id}: ${data.kind} ${data.subject?.login}, approved by ${(data.approved_by ?? []).join(", ") || "nobody"}\n`);
   } else if (cmd === "issued") {
     if (!opts.in) die("issued needs --in", 2);
     const r = readJson(opts.in);
-    if (!REQUEST_ID.test(r.request_id ?? "") || !/^[0-9a-f]{16}$/.test(r.serial ?? "") || typeof r.cert !== "string") throw new Error(`${opts.in}: not an issue result`);
+    if (!REQUEST_ID.test(r.request_id ?? "") || !isSerial(r.serial) || typeof r.cert !== "string") throw new Error(`${opts.in}: not an issue result`);
     if (!["origin", "trusted"].includes(r.tier)) throw new Error(`${opts.in}: no tier`);
     await call("POST", "/api/pipeline/certs", { request_id: r.request_id, serial: r.serial, tier: r.tier, cert: r.cert });
     process.stdout.write(`the hub knows certificate ${r.serial} for request ${r.request_id}\n`);
-  } else die("usage: api.mjs pending|verdicts|export|request|issued ...", 2);
+  } else if (cmd === "revoked") {
+    if (!opts.id || !opts.serial) die("revoked needs --id and --serial", 2);
+    if (!REQUEST_ID.test(opts.id) || !opts.id.startsWith("v-")) throw new Error(`${opts.id}: not a revocation id`);
+    if (!isSerial(opts.serial)) throw new Error(`${opts.serial}: not a certificate id or statement serial`);
+    await call("POST", "/api/pipeline/revocations", { request_id: opts.id, serial: opts.serial });
+    process.stdout.write(`the hub knows revocation ${opts.id} of ${opts.serial} is published\n`);
+  } else die("usage: api.mjs pending|verdicts|export|request|issued|revoked ...", 2);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) main().catch((e) => die(e.message));

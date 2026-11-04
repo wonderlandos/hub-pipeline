@@ -4,15 +4,15 @@
 //
 //   build-revoked.mjs --source revocations.json --previous signed/revoked.json --out revoked.json [--now unix]
 //
-// {format:1, serial, issued, expires = issued + 7 days, entries:[{serial, at, reason}]}, the exact shape
+// {format:1, serial, issued, expires = issued + 24 hours (woltrust rkdb::LIFETIME), entries:[{serial, at, reason}]}, the exact shape
 // of woltrust revoked.rs (unknown keys are refused there). The serial grows with every publication.
-// Re-issued at least daily by sign.yml, so a list never goes stale while the pipeline lives. Entries with reason
+// Re-issued hourly by sign.yml (lead decision "RKDB": lists are valid 24 hours and republished hourly). Entries with reason
 // withdrawn-version are left out unless tools/woltrust.features says the pinned woltrust reads them.
 import { existsSync } from "node:fs";
 import { die, jsonText, nowSeconds, parseArgs, readJson, woltrustFeatures, writeAtomic } from "./lib.mjs";
 import { checkRevoked } from "./validate.mjs";
 
-const WEEK = 7 * 86400;
+const LIFETIME = 86400; // woltrust rkdb::LIFETIME
 
 export function buildRevoked(source, previousSerial, now, { withdrawnVersion = woltrustFeatures().has("withdrawn-version") } = {}) {
   if (source.format !== 1 || !Array.isArray(source.entries)) throw new Error("revocations.json: expected {format:1, entries:[...]}");
@@ -22,7 +22,7 @@ export function buildRevoked(source, previousSerial, now, { withdrawnVersion = w
     .filter((e) => withdrawnVersion || e.reason !== "withdrawn-version")
     .map(({ serial, at, reason }) => ({ serial, at, reason }))
     .sort((a, b) => a.at - b.at || (a.serial < b.serial ? -1 : 1));
-  const list = { format: 1, serial: previousSerial + 1, issued: now, expires: now + WEEK, entries };
+  const list = { format: 1, serial: previousSerial + 1, issued: now, expires: now + LIFETIME, entries };
   const errors = checkRevoked(list);
   if (errors.length) throw new Error(errors.join("; "));
   return list;

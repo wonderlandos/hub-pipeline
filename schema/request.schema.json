@@ -204,6 +204,11 @@
           "type": "integer",
           "minimum": 1,
           "description": "When the subject accepted the CLA (the Worker's record); required for tier origin."
+        },
+        "origin_cert": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{16}|[0-9a-f]{128})$",
+          "description": "Tier trusted: the id of the subject's origin certificate the approval was given on (ADR 0047, the Worker's record). The ca job checks it is the subject's active origin certificate and writes it into the signed body (woltrust origin_cert)."
         }
       }
     },
@@ -224,10 +229,15 @@
         "action": {
           "const": "revoke"
         },
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+          "description": "The Worker's revocation id (a certificate revocation or, for reason withdrawn-version, a version withdrawal: v-...); absent for a request the CA operator wrote by hand. The ca job reports {request_id, serial} back to POST /api/pipeline/revocations."
+        },
         "serial": {
           "type": "string",
-          "pattern": "^[0-9a-f]{16}$",
-          "description": "A certificate serial, or for reason withdrawn-version the statement serial of one listed version (index entry statement.serial)."
+          "pattern": "^([0-9a-f]{16}|[0-9a-f]{128})$",
+          "description": "A certificate id (128 hex), or for reason withdrawn-version the statement serial (16 hex) of one listed version (index entry statement.serial)."
         },
         "reason": {
           "enum": [

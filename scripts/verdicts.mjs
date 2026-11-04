@@ -8,7 +8,7 @@
 //   verdicts.mjs log   --verdicts clean.json --dir verdicts --run "<run_id>.<attempt>" --workflow-sha SHA [--now unix]
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { die, jsonText, nowSeconds, parseArgs, readJson, writeAtomic } from "./lib.mjs";
+import { die, jsonText, nowSeconds, parseArgs, readJson, writeAtomic, isSerial } from "./lib.mjs";
 
 const VERDICTS = ["pass", "flag", "block", "not-checked"];
 const TRUST = ["wolos", "verified", "community", "withdrawn", "invalid"];
@@ -30,7 +30,7 @@ export function cleanVerdict(v) {
   }
   const out = { listing_id: v.listing_id, version: v.version, verdict: v.verdict, ...(v.sha256 ? { sha256: v.sha256 } : {}), ...(v.size != null ? { size: v.size } : {}), findings };
   if (TRUST.includes(v.trust)) out.trust = v.trust;
-  if (typeof v.cert === "string" && /^[0-9a-f]{16}$/.test(v.cert)) out.cert = v.cert;
+  if (isSerial(v.cert)) out.cert = v.cert;
   return out;
 }
 

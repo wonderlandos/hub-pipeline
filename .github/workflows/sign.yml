@@ -4,6 +4,16 @@
 # that holds the signing keys and the upload token, and it parses no release file: it reads the Worker's JSON, checks it
 # against schema/index.schema.json and checks each new entry against GitHub itself.
 #
+# Beside index.json (+ .sig, .wsig) and revoked.json (+ .wsig) it publishes (trust phase 4, woltrust 68b5a03):
+#   revoked.rkdb              the revocation database, chained to the last one in log/signed/ (serial + 1, no entry lost)
+#   revoked.checkpoint.json   its checkpoint, on the CDN (plugins/) and at the root of hub-log: WolOS reads both
+#   intermediates.json        a JSON array of log/certs/intermediates/*.wolcert (plugins/intermediates.json)
+#   emergency.rkdr            when log/signed/emergency.rkdr exists (a root-signed section made offline with `woltrust
+#                             emergency` and committed to hub-log by hand): copied to the CDN and carried inside revoked.rkdb
+#   release.json.wsig         when a release manifest URL is given (input release_manifest): the Index's signature over it,
+#                             uploaded to latest/release.json.wsig beside the manifest
+# All of it is mirrored to log/signed/ (and the checkpoint to log/revoked.checkpoint.json).
+#
 # This repository (wonderlandos/hub-pipeline, private) holds the code; the job reads and writes the log in a second
 # checkout at log/ (certs/, revocations.json, signed/) and pushes only there, with the environment's deploy key.
 #
@@ -38,6 +48,10 @@ on:
         description: "Sign and publish even when nothing changed or the new index is much smaller"
         type: boolean
         default: false
+      release_manifest:
+        description: "https URL of a WolOS release manifest (release.json) to sign as release.json.wsig in this run (optional)"
+        type: string
+        required: false
 
 # Shares nothing with check on purpose; the commit step rebases over its pushes.
 concurrency:
@@ -59,6 +73,7 @@ jobs:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
       FIXTURES: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && inputs.fixtures && '1' || '0' }}
       FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && '1' || '0' }}
+      RELEASE_MANIFEST: ${{ github.event_name == 'workflow_dispatch' && inputs.release_manifest || '' }}
       CDN_BASE: ${{ vars.CDN_BASE }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -110,12 +125,12 @@ jobs:
           mkdir -p work/out
           [ -f log/revocations.json ] || echo '{"format":1,"entries":[]}' > log/revocations.json
           node scripts/build-revoked.mjs --source log/revocations.json --previous log/signed/revoked.json --out work/out/revoked.json
-          force=; [ "$FORCE" = 1 ] && force=--force
+          extra=(); [ "$FORCE" != 1 ] || extra+=(--force)
           # Release statements once the pinned woltrust signs them (tools/woltrust.features: statements).
-          statements=; grep -qx statements <(sed 's/#.*//; s/ //g' tools/woltrust.features) && statements="--statements work/out/statements --statements-url https://cdn.wolos.org/plugins/statements"
+          ! grep -qx statements <(sed 's/#.*//; s/ //g' tools/woltrust.features) || extra+=(--statements work/out/statements --statements-url https://cdn.wolos.org/plugins/statements)
           node scripts/build-index.mjs --export work/export.checked.json --revoked work/out/revoked.json \
             --revoked-url "https://cdn.wolos.org/plugins/revoked.json" --previous log/signed/index.json \
-            --intermediates log/certs/intermediates --certs log/certs --revocations log/revocations.json $statements --out work/out/index.json $force
+            --intermediates log/certs/intermediates --certs log/certs --revocations log/revocations.json --out work/out/index.json "${extra[@]}"
           node scripts/validate.mjs index work/out/index.json --revoked work/out/revoked.json
           node scripts/validate.mjs revoked work/out/revoked.json
 
@@ -123,9 +138,21 @@ jobs:
         id: need
         run: |
           force=; [ "$FORCE" = 1 ] && force=--force
+          [ -z "$RELEASE_MANIFEST" ] || force=--force   # a release manifest to sign is always a publication
           answer=$(node scripts/needs-publish.mjs --index work/out/index.json --revoked work/out/revoked.json --previous log/signed $force)
           echo "$answer"
           echo "publish=${answer%% *}" >> "$GITHUB_OUTPUT"
+
+      - name: The emergency section in force and the release manifest to sign
+        if: steps.need.outputs.publish == 'yes'
+        run: |
+          # A root-signed emergency section committed to hub-log by hand (woltrust emergency) rides along until it is removed there.
+          [ ! -s log/signed/emergency.rkdr ] || cp log/signed/emergency.rkdr work/out/emergency.rkdr
+          if [ -n "$RELEASE_MANIFEST" ]; then
+            [[ $RELEASE_MANIFEST =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]+\.json$ ]] || { echo "release_manifest is an https URL of a .json file"; exit 1; }
+            curl -fsSL --proto '=https' --max-time 60 --max-filesize 4194304 -o work/out/release.json "$RELEASE_MANIFEST"
+            echo "release manifest: $RELEASE_MANIFEST ($(sha256sum work/out/release.json | cut -c1-64))"
+          fi
 
       - name: Sign (legacy Ed25519 and hybrid)
         if: steps.need.outputs.publish == 'yes'
@@ -136,8 +163,10 @@ jobs:
           WOLOS_LEGACY_INDEX_KEY: ${{ secrets.WOLOS_LEGACY_INDEX_KEY }}
           CERT: ${{ vars.INDEX_CERT_SERIAL }}
         run: |
-          # A dry run signs as the TEST Index intermediate (scripts/test-keys.mjs); these secrets are not read.
-          if [ "$DRY_RUN" = 1 ]; then CERT=$(node -e 'import("./scripts/test-keys.mjs").then((m) => console.log(m.testSerial(m.TEST.index)))'); fi
+          # A dry run signs as the TEST Index intermediate (scripts/test-keys.mjs); these secrets are not read, and the
+          # TEST database starts at serial 1 (it never follows the real one).
+          if [ "$DRY_RUN" = 1 ]; then CERT=$(node -e 'import("./scripts/test-keys.mjs").then((m) => console.log(m.testSerial(m.TEST.index)))');
+          else export SIGN_ROOTS=log/certs/roots SIGN_INTERMEDIATES=log/certs/intermediates SIGN_PREVIOUS_RKDB=log/signed/revoked.rkdb; fi
           scripts/sign-files.sh work/out "${CERT:?the variable INDEX_CERT_SERIAL is not set in the sign environment}"
 
       - name: Upload to the CDN
@@ -150,11 +179,14 @@ jobs:
         if: steps.need.outputs.publish == 'yes' && env.DRY_RUN != '1'
         run: |
           mkdir -p log/signed
-          cp work/out/index.json work/out/index.json.sig work/out/index.json.wsig work/out/revoked.json work/out/revoked.json.wsig log/signed/
+          cp work/out/index.json work/out/index.json.sig work/out/index.json.wsig work/out/revoked.json work/out/revoked.json.wsig \
+             work/out/revoked.rkdb work/out/revoked.checkpoint.json work/out/intermediates.json log/signed/
+          cp work/out/revoked.checkpoint.json log/revoked.checkpoint.json   # cdn.rs RKDB_CHECKPOINTS: the log copy, at the root
+          [ ! -s work/out/release.json.wsig ] || cp work/out/release.json.wsig log/signed/
           if [ -d work/out/statements ]; then (cd work/out && find statements -name '*.wsig' -exec install -D -m 644 {} ../../log/signed/{} \;); fi
           serial=$(node -p 'require("./log/signed/index.json").serial')
           counts=$(node -p 'const i=require("./log/signed/index.json");i.apps.length+" apps, "+i.plugins.length+" plugins, "+i.extensions.length+" extensions"')
-          scripts/commit-log.sh "index $serial: $counts; revoked $(node -p 'require("./log/signed/revoked.json").serial')" signed
+          scripts/commit-log.sh "index $serial: $counts; revoked $(node -p 'require("./log/signed/revoked.json").serial'), rkdb $(node -p 'require("./log/signed/revoked.checkpoint.json").serial')" signed revoked.checkpoint.json
 
       - name: Keep the dry run
         if: always() && env.DRY_RUN == '1'

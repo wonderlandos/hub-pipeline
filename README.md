@@ -35,8 +35,11 @@ requests/<name>.json        hand-written requests (a revocation, an operator's i
 schema/                     copy of hub-log's schema/
 
 log/ in every job = wonderlandos/hub-log
-signed/                     the last publication: index.json, index.json.sig, index.json.wsig, revoked.json, revoked.json.wsig
+signed/                     the last publication: index.json, index.json.sig, index.json.wsig, revoked.json, revoked.json.wsig,
+                            revoked.rkdb (the revocation database), revoked.checkpoint.json (its checkpoint), intermediates.json
+                            (JSON array of certs/intermediates/*.wolcert), emergency.rkdr (while one is in force), release.json.wsig
                             (git history of this folder = every index ever signed, append-only; commits come from the sign workflow)
+revoked.checkpoint.json     the checkpoint again at the root: crates/core/src/cdn.rs RKDB_CHECKPOINTS reads it there and on the CDN
 verdicts/<id>/<version>.json   one check verdict per release (verdict, findings, sha256, size, run, workflow sha)
 certs/<serial>.wolcert      every author certificate the Authors CA issued; certs/<serial>.json its record (tier, request_id, ...)
 certs/roots/                the public root certificates (the ones the image pins), for hubcheck and the sign job's self-check
@@ -45,8 +48,35 @@ revocations.json            the entries of the revocation list (appended by the 
 schema/                     index.schema.json (I3), revoked.schema.json, request.schema.json
 ```
 
-Clients read the CDN, not a repository: `https://cdn.wolos.org/plugins/{index.json,index.json.sig,index.json.wsig,revoked.json,revoked.json.wsig}`.
-hub-log is the log and the mirror (ADR 0047, option C): the same bytes, with history.
+Clients read the CDN, not a repository: `https://cdn.wolos.org/plugins/{index.json,index.json.sig,index.json.wsig,revoked.json,revoked.json.wsig,revoked.rkdb,revoked.checkpoint.json,intermediates.json,emergency.rkdr}`
+(crates/core/src/trust.rs `REVOKED_PATH`, `RKDB_PATH`, `EMERGENCY_PATH`, `INTERMEDIATES_PATH`; cdn.rs `RKDB_CHECKPOINTS`) and
+`https://cdn.wolos.org/latest/release.json.wsig` beside the release manifest. hub-log is the log and the mirror (ADR 0047, option C): the same bytes, with history.
+
+## Trust phase 4 (woltrust 68b5a03)
+
+- A certificate id is SHA-512 over its public keys (128 hex, rule "IDS"); `ca.mjs` derives it (`lib.mjs keyId`) and `woltrust issue`
+  refuses any other. The same keys always give the same id, so a second certificate for the same keys is refused (a revoked key
+  stays revoked: new keys). 16-hex serials remain for the TEST authority and for release statements; `lib.mjs SERIAL` is the one
+  pattern every script and schema uses.
+- The real roots and intermediates live in hub-log `certs/roots` and `certs/intermediates` (`root-a-<id>`, `root-b-<id>`,
+  `authors-ca-`, `packages-ca-`, `index-`, `witness-a-`, `witness-b-`); every intermediate carries both roots' signatures. The
+  sign job verifies against them (`SIGN_ROOTS`, `SIGN_INTERMEDIATES`); the variables `INDEX_CERT_SERIAL` and `AUTHORS_CA_SERIAL`
+  hold the 128-hex ids.
+- `sign-files.sh` makes `revoked.rkdb` (`woltrust rkdb make`, chained to `log/signed/revoked.rkdb`: serial + 1, no entry lost,
+  checked with `rkdb delta`), `revoked.checkpoint.json` (`rkdb checkpoint`), `intermediates.json`, carries `emergency.rkdr` inside
+  the database when hub-log `signed/emergency.rkdr` exists (made offline with `woltrust emergency`, committed by hand), and signs a
+  release manifest (`sign.yml` input `release_manifest`, an https URL) as `release.json.wsig` with label `wolos/index/1` (what
+  `wol_core::update::check` reads). `revoked.json` is valid 24 hours (`rkdb::LIFETIME`), re-signed hourly.
+- The proof of possession covers login, name, organisation and namespaces too (`woltrust::request::Claimed`): `ca.mjs` refuses a
+  request whose signed claims are not what GitHub shows, before anything is signed. Bodies carry `class` and, for trusted,
+  `origin_cert` (`tools/woltrust.features`: `class`, `withdrawn-version`; `statements` stays off: the 68b5a03 command line has no
+  `--purpose release`).
+- Revocations the hub approved (HUB-worker-3): `ca.yml` dispatched with a `v-...` id fetches a revoke request
+  (`GET /api/pipeline/requests/v-...`, schema `id`, `note`), appends it, and reports `POST /api/pipeline/revocations
+  {request_id, serial}` (`api.mjs revoked`). Issue requests for trusted carry `origin_cert`, checked against the subject's active
+  origin certificate.
+- hubcheck stays at `a0fcf58` (the newest `wasm/` commit of `wonderlandos/hub`, built on woltrust `0b00c1e`): it does not read
+  128-hex ids or two-root intermediates, so files signed under the real roots come out `community` until hub bumps woltrust.
 
 ## How a release gets listed
 
@@ -222,14 +252,14 @@ Both tools are built from the commit in `tools/<name>.rev` by `scripts/tool.sh <
 --locked`; the binary is cached in `~/.cache/hub-pipeline-tools/<name>-<rev>/bin`, in actions/cache for `ci.yml` and the scan job, never for the
 jobs that hold secrets). There are no stand-ins: dry runs and `scripts/test.sh` run the same binaries with the TEST authority.
 
-`hubcheck` (HUB-wasm, `wonderlandos/hub` `wasm/`, `tools/hubcheck.rev` = `a0fcf58`; zstd plugins and extensions are read by default), called by `check-release.mjs`:
+`hubcheck` (HUB-wasm, `wonderlandos/hub` `wasm/`, `tools/hubcheck.rev` = `a0fcf58`, `tools/hubcheck.sha256` the binary built here; zstd plugins and extensions are read by default), called by `check-release.mjs`:
 `hubcheck inspect app|plugin|extension FILE --store store.json --now UNIX [--first-seen UNIX]` prints one line of I7 JSON,
 `{"verdict":"pass|flag|block|not-checked","findings":[{"rule","sentence","evidence"}],"trust":"wolos|verified|community|withdrawn|invalid","cert"?:{"serial","subject","level"},"origin"?,"file"?:{"id","version"?}}`,
 exit 0 whenever it printed a report. The verdict is hubcheck's; `check-release.mjs` adds only what hubcheck cannot know (download, the size
 GitHub listed, the 120-second limit, and a block when `file.id` or `file.version` is not the listing's) and turns anything else (no binary, no store, a non-zero exit, output that is not a report, a timeout)
 into `not-checked`. `store.json` is `scripts/store.mjs` (`{"roots":[...],"intermediates":[...],"allow_test":false,"revoked":[{"list","wsig"}]}`).
 
-`woltrust` (the woltrust crate of wolos, `src/bin/woltrust.rs`, `tools/woltrust.rev` = `fe64176`, branch `wave3/trust-core`):
+`woltrust` (the woltrust crate of wolos, `src/bin/woltrust.rs`, `tools/woltrust.rev` = `68b5a03`, `tools/woltrust.sha256`, branch `wave3/trust-core`):
 - `woltrust sign --purpose index|revocation --cert SERIAL --key-env NAME --passphrase-env WOLOS_KEY_PASSPHRASE FILE` prints the `.wsig`
   (`{"cert","ed25519","second"}`) over `label || 0x00 || SHA-512(FILE)` (`sign-files.sh`);
 - `woltrust verify --purpose P --wsig F --roots DIR --intermediates DIR --list revoked.json [--chain F] [--id ID] [--allow-test] [--now N] FILE`
@@ -237,9 +267,12 @@ into `not-checked`. `store.json` is `scripts/store.mjs` (`{"roots":[...],"interm
 - `woltrust issue --body BODY.json --proof PROOF.json --key-env NAME --passphrase-env WOLOS_KEY_PASSPHRASE` checks the proof of possession
   against the body and prints the `.wolcert` whose `body` is exactly the bytes of BODY.json (`ca.mjs` refuses an answer whose body differs,
   or whose Ed25519 half is not the CA's);
-- `woltrust revoke --source revocations.json [--previous revoked.json] [--now N]` makes the same list as `build-revoked.mjs` (`test.sh` compares them).
-- `tools/woltrust.features` lists what the pinned woltrust can do beyond `fe64176` (`class`, `statements`, `withdrawn-version`); the scripts
-  read it and leave out what woltrust would refuse.
+- `woltrust revoke --source revocations.json [--previous revoked.json] [--now N]` makes the same list as `build-revoked.mjs` (`test.sh` compares them);
+- `woltrust rkdb make --source revoked.json [--previous revoked.rkdb] [--root-section emergency.rkdr] [--now N] --cert ID KEY`,
+  `rkdb checkpoint FILE`, `rkdb verify --roots DIR --intermediates DIR [--floor N] [--allow-test] FILE`, `rkdb delta OLD NEW`
+  (`sign-files.sh`, `test.sh`).
+- `tools/woltrust.features` lists what the pinned woltrust can do beyond `fe64176` (`class`, `statements`, `withdrawn-version`; at
+  `68b5a03`: `class` and `withdrawn-version`); the scripts read it and leave out what woltrust would refuse.
 
 Exit codes: 0 done, 1 refused (the reason on stderr), 2 a wrong command line. Key material comes from the environment or a file, never
 an argument.

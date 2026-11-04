@@ -38,7 +38,7 @@ on:
         type: string
         required: false
       request_id:
-        description: "Id of a request approved in the hub admin panel (the Worker sends it)"
+        description: "Id of a request approved in the hub admin panel (the Worker sends it): an issue request, or a revocation / version withdrawal (v-...)"
         type: string
         required: false
       dry_run:
@@ -97,7 +97,7 @@ jobs:
             [[ "$REQUEST_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] || { echo "not a request id"; exit 1; }
             # Handled already (a second dispatch): a certificate record in the log names this request. ca.mjs refuses a
             # second active certificate per account and tier as well.
-            if REQUEST_ID="$REQUEST_ID" node -e 'const f=require("fs"),d="log/certs";process.exit(f.existsSync(d)&&f.readdirSync(d).filter(n=>/^[0-9a-f]{16}\.json$/.test(n)).some(n=>JSON.parse(f.readFileSync(d+"/"+n)).request_id===process.env.REQUEST_ID)?0:1)'; then
+            if REQUEST_ID="$REQUEST_ID" node -e 'const f=require("fs"),d="log/certs";process.exit(f.existsSync(d)&&f.readdirSync(d).filter(n=>/^([0-9a-f]{16}|[0-9a-f]{128})\.json$/.test(n)).some(n=>JSON.parse(f.readFileSync(d+"/"+n)).request_id===process.env.REQUEST_ID)?0:1)'; then
               echo "request $REQUEST_ID was handled already"; exit 1
             fi
             node scripts/api.mjs request --id "$REQUEST_ID" --out "requests/$REQUEST_ID.json"
@@ -108,7 +108,12 @@ jobs:
           if [ ! -f "$REQUEST" ] || [ -L "$REQUEST" ]; then echo "$REQUEST is not a plain file"; exit 1; fi
           node scripts/validate.mjs request "$REQUEST"
           action=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.REQUEST)).action')
-          if [ -n "$REQUEST_ID" ] && [ "$action" != issue ]; then echo "the Worker sends issue requests only"; exit 1; fi
+          # The Worker's ids: v-... is a revocation (a certificate, or a version with reason withdrawn-version), anything else an issue.
+          if [ -n "$REQUEST_ID" ]; then
+            want=issue; [[ $REQUEST_ID == v-* ]] && want=revoke
+            [ "$action" = "$want" ] || { echo "request $REQUEST_ID is a $action request; its id says $want"; exit 1; }
+            [ "$(node -p 'JSON.parse(require("fs").readFileSync(process.env.REQUEST)).id')" = "$REQUEST_ID" ] || { echo "the request's id is not $REQUEST_ID"; exit 1; }
+          fi
           echo "ACTION=$action" >> "$GITHUB_ENV"
 
       - name: Build woltrust (pinned, from source)
@@ -170,6 +175,10 @@ jobs:
       - name: Tell the Worker the serial
         if: env.DRY_RUN != '1' && env.ACTION == 'issue' && env.REQUEST_ID != ''
         run: node scripts/api.mjs issued --in "$RUNNER_TEMP/issued.json"
+
+      - name: Tell the Worker the revocation is published
+        if: env.DRY_RUN != '1' && env.ACTION == 'revoke' && env.REQUEST_ID != ''
+        run: node scripts/api.mjs revoked --id "$REQUEST_ID" --serial "$(node -p 'JSON.parse(require("fs").readFileSync(process.env.REQUEST)).serial')"
 
       - name: Publish a revocation now
         if: env.DRY_RUN != '1' && env.ACTION == 'revoke'
