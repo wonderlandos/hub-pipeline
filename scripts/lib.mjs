@@ -5,6 +5,19 @@ import { readFileSync, writeFileSync, renameSync } from "node:fs";
 
 export const sha256Hex = (buf) => createHash("sha256").update(buf).digest("hex");
 
+/** A certificate id: 128 lowercase hex (SHA-512 over the public keys, woltrust rule "IDS"), or a 16-hex serial of before
+ *  that rule (the TEST authority's, the statement serials, 0.12-era certificates). One pattern for every script and schema. */
+export const SERIAL_PATTERN = "^([0-9a-f]{16}|[0-9a-f]{128})$";
+export const SERIAL = new RegExp(SERIAL_PATTERN);
+export const isSerial = (s) => typeof s === "string" && SERIAL.test(s);
+
+/** The id woltrust derives for a key set (wolcrypt::id::of_keys): SHA-512 over ed25519 || ml-dsa-65 [|| x25519 || ml-kem-768],
+ *  raw key bytes in that order, absent encryption keys left out. The certificate's serial must be exactly this. */
+export const keyId = (keys) => {
+  const parts = ["ed25519", "ml-dsa-65", ...(keys.x25519 && keys["ml-kem-768"] ? ["x25519", "ml-kem-768"] : [])];
+  return createHash("sha512").update(Buffer.concat(parts.map((k) => Buffer.from(keys[k], "base64url")))).digest("hex");
+};
+
 export const readJson = (path) => {
   let text;
   try {

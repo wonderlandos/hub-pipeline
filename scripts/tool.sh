@@ -5,6 +5,9 @@
 #   tool.sh hubcheck|woltrust
 #
 # tools/<name>.rev holds one 40-digit commit id (or "unpinned": exit 3, nothing is built, the workflow stops).
+# tools/<name>.sha256 (optional) is the sha256 of the binary built from that commit on the pipeline's own machine
+# (rustc of tools/README.md): a differing hash is printed as a warning (a rustc of another version builds other bytes);
+# TOOL_SHA256_STRICT=1 makes it a refusal.
 #   hubcheck   wonderlandos/hub    wasm/          cargo build --release --locked --bin hubcheck   (HUB-wasm, ADR 0047)
 #   woltrust   wonderlandos/wolos  crates/woltrust cargo build --release --locked -p woltrust --bin woltrust (ADR 0046)
 #
@@ -33,8 +36,19 @@ fi
 
 cache=${TOOL_CACHE:-${HOME:?}/.cache/hub-pipeline-tools}/$name-$rev
 bin=$cache/bin/$name
+check_sha() { # the pinned sha256 of the binary, when tools/<name>.sha256 is there
+    local want got
+    [ -s "$here/../tools/$name.sha256" ] || return 0
+    want=$(tr -d ' \n' <"$here/../tools/$name.sha256")
+    got=$(sha256sum "$1" | cut -d' ' -f1)
+    if [ "$want" = "$got" ]; then echo "tool: $name sha256 $got matches tools/$name.sha256" >&2; return 0; fi
+    echo "tool: WARNING $name built from $rev has sha256 $got, tools/$name.sha256 says $want (another rustc?)" >&2
+    [ "${TOOL_SHA256_STRICT:-0}" = 1 ] && return 1
+    return 0
+}
 if [ -x "$bin" ] && [ "$(cat "$cache/rev" 2>/dev/null)" = "$rev" ]; then
     echo "tool: $name $rev from the cache" >&2
+    check_sha "$bin" || exit 1
     echo "$bin"
     exit 0
 fi
@@ -74,4 +88,5 @@ cp "$CARGO_TARGET_DIR/release/$name" "$bin.tmp"
 mv "$bin.tmp" "$bin"
 echo "$rev" >"$cache/rev"
 rm -rf "$checkout" "$CARGO_TARGET_DIR"   # only bin/ and rev stay: that is what actions/cache keeps
+check_sha "$bin" || exit 1
 echo "$bin"

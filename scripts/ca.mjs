@@ -32,12 +32,12 @@
 //         within the hour). A revocation of an unknown serial is refused. abuse needs two approvers.
 // --archive moves the request to requests/done/ when it succeeded. The woltrust command: --woltrust, else WOLTRUST
 // (env), else `woltrust` on PATH; always the real one (scripts/tool.sh woltrust), dry runs use the TEST Authors CA key.
-import { createHash, createPublicKey, randomBytes, verify } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
-import { die, jsonText, nowSeconds, parseArgs, readJson, woltrustFeatures, writeAtomic } from "./lib.mjs";
+import { SERIAL, die, isSerial, jsonText, keyId, nowSeconds, parseArgs, readJson, woltrustFeatures, writeAtomic } from "./lib.mjs";
 import { checkRequest, reservedName, skeleton } from "./validate.mjs";
 import { githubIdentity } from "./github-identity.mjs";
 
@@ -48,8 +48,8 @@ const decodeBody = (cert) => JSON.parse(Buffer.from(cert.body, "base64url").toSt
 /** Every .wolcert in certs/ (not the CA's own), with its decoded body. */
 export function knownCerts(dir) {
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter((f) => /^[0-9a-f]{16}\.wolcert$/.test(f)).map((f) => {
-    const serial = f.slice(0, 16);
+  return readdirSync(dir).filter((f) => f.endsWith(".wolcert") && SERIAL.test(f.slice(0, -8))).map((f) => {
+    const serial = f.slice(0, -8);
     const meta = join(dir, `${serial}.json`);
     // A certificate from before the two tiers has no record: it was approved by a person, so it counts as trusted.
     return { file: f, body: decodeBody(readJson(join(dir, f))), tier: existsSync(meta) ? readJson(meta).tier : "trusted" };
@@ -154,7 +154,7 @@ export function certBody(req, { serial, issuer, now, identity, withClass = false
 
 async function issue(opts, req) {
   for (const o of ["certs", "issuer-serial"]) if (!opts[o]) die(`issue needs --${o}`, 2);
-  if (!/^[0-9a-f]{16}$/.test(opts["issuer-serial"])) die("--issuer-serial is 16 lowercase hex characters", 2);
+  if (!isSerial(opts["issuer-serial"])) die("--issuer-serial is the Authors CA certificate id (128 lowercase hex characters; 16 for the TEST authority)", 2);
   const now = opts.now ? Number(opts.now) : nowSeconds();
   if (req.tier === "trusted") {
     if (opts.approvers === undefined) die("a trusted certificate needs --approvers (the repository variable CA_APPROVERS)");
@@ -173,16 +173,28 @@ async function issue(opts, req) {
   if (clash) die(`refused: ${clash.ours} is taken or looks like ${clash.theirs} (certificate ${clash.serial} of another account)`);
   const dup = known.find((c) => c.body.kind === req.kind && c.tier === req.tier && c.body.subject?.github_id === req.subject.github_id && c.body.not_after > now && !revokedSerials.has(c.body.serial));
   if (dup) die(`GitHub account ${req.subject.login} already has the active ${req.tier} certificate ${dup.body.serial}; revoke it first (reason superseded)`);
+  // The proof covers login, name, organisation and namespaces as the requester signed them (woltrust 68b5a03
+  // request::Claimed): a body with GitHub's values that differ would not verify. Refuse with the reason, so the author
+  // re-requests with what GitHub shows now.
+  const signed = JSON.stringify({ login: req.subject.login, name: req.subject.name, org: req.subject.org ?? null });
+  const found = JSON.stringify({ login: identity.subject.login, name: identity.subject.name, org: identity.subject.org ?? null });
+  if (signed !== found) die(`refused: the request signed ${signed}, GitHub shows ${found}; the proof covers these, so the author requests again with what GitHub shows`);
   const withClass = woltrustFeatures().has("class");
   let originCert = null;
   if (withClass && req.tier === "trusted") {
     const o = known.find((c) => c.tier === "origin" && c.body.kind === req.kind && c.body.subject?.github_id === req.subject.github_id && c.body.not_after > now && !revokedSerials.has(c.body.serial));
     if (!o) die(`a trusted certificate links to the subject's origin certificate: issue ${req.subject.login}'s origin certificate first`);
     originCert = o.body.serial;
+    // The Worker names the origin certificate it approved the trusted one on (ADR 0047); it must be the live one found here.
+    if (req.origin_cert && req.origin_cert !== originCert) die(`the request names origin certificate ${req.origin_cert}, but ${req.subject.login}'s active origin certificate is ${originCert}`);
   }
-  let serial;
-  do serial = randomBytes(8).toString("hex");
-  while (known.some((c) => c.body.serial === serial) || serial === opts["issuer-serial"]);
+  // Rule "IDS" (woltrust 68b5a03): the serial is SHA-512 over the public keys, so the same keys always give the same
+  // certificate id. A second certificate for the same keys is refused: a revoked key stays revoked, an active one is
+  // already that certificate; the author makes new keys.
+  const serial = keyId(req.keys);
+  const same = known.find((c) => c.body.serial === serial);
+  if (same) die(revokedSerials.has(serial) ? `these keys were revoked (certificate ${serial}); a new certificate needs new keys` : `these keys already hold certificate ${serial} (${same.tier})`);
+  if (serial === opts["issuer-serial"]) die("the request carries the CA's own keys");
   const body = Buffer.from(JSON.stringify(certBody(req, { serial, issuer: opts["issuer-serial"], now, identity, withClass, originCert })));
   mkdirSync(opts.certs, { recursive: true });
   const tmp = join(mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), "ca-")), "body.json"); // public data only

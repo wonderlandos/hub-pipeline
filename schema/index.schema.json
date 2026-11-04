@@ -62,7 +62,7 @@
         "sha256": { "$ref": "#/$defs/sha256", "description": "Of the release asset, pinned at the first check. A different file at the same URL is refused." },
         "size": { "type": "integer", "minimum": 1, "maximum": 1073741824 },
         "trust": { "enum": ["wolos", "trusted", "origin", "community"], "description": "trusted: signed with a trusted certificate (an admin approved the developer or organisation); origin: signed with an origin certificate (who made it and from which repository, issued once the CLA is accepted), or with a trusted one that was revoked as superseded; community: no certificate the hub counts." },
-        "cert": { "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "Serial of the leaf certificate that signed the file (trust wolos, trusted or origin), from hubcheck's report through the Worker's export." },
+        "cert": { "type": "string", "pattern": "^([0-9a-f]{16}|[0-9a-f]{128})$", "description": "Id of the leaf certificate (SHA-512 over its keys, 128 hex; 16 hex for a certificate of before that rule) that signed the file (trust wolos, trusted or origin), from hubcheck's report through the Worker's export." },
         "verdict": { "enum": ["pass", "flag"], "description": "block and not-checked releases are never listed." },
         "findings": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/finding" } },
         "owner": {

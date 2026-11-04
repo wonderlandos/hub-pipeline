@@ -102,7 +102,21 @@ fn request(seed: &str, id: &str, tier: &str) -> Vec<u8> {
     let keys = km.keys_text();
     let org = seed.ends_with("-org");
     let (gid, kind) = if org { (2002, woltrust::cert::Kind::Org) } else { (1001, woltrust::cert::Kind::Person) };
-    let proof = woltrust::request::prove(&km.secret(), gid, kind, &keys);
+    // The proof covers everything the CA copies into the certificate (audit H2, woltrust 68b5a03 request::Claimed):
+    // GitHub id, kind, login, name, organisation, namespaces and the keys.
+    let alice_org = woltrust::cert::OrgRef { github_id: 2002, login: "examplelabs".into() };
+    let namespaces: Vec<String> = vec![if org { "examplelabs." } else { "alice." }.into()];
+    let claimed = woltrust::request::Claimed {
+        github_id: gid,
+        kind,
+        login: if org { "examplelabs" } else { "alice" },
+        name: if org { "Example Labs" } else { "Alice Example" },
+        org: if org { None } else { Some(&alice_org) },
+        namespaces: &namespaces,
+        keys: &keys,
+        terms: None,
+    };
+    let proof = woltrust::request::prove(&km.secret(), &claimed);
     let mut k = serde_json::Map::new();
     k.insert("ed25519".into(), keys.ed25519.clone().into());
     k.insert("ml-dsa-65".into(), keys.ml_dsa_65.clone().expect("ml-dsa").into());

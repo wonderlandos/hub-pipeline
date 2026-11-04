@@ -3,7 +3,11 @@
 # Uploads a signed publication to the CDN under plugins/ and reads it back.
 #
 #   publish.sh <dir>        <dir>: index.json index.json.sig index.json.wsig revoked.json revoked.json.wsig
+#                           revoked.rkdb revoked.checkpoint.json intermediates.json [emergency.rkdr] [release.json.wsig]
 #                           [statements/<id>/<version>.wsig]
+#                           Everything goes to plugins/<name> (crates/core/src/trust.rs: RKDB_PATH, EMERGENCY_PATH,
+#                           INTERMEDIATES_PATH; cdn.rs RKDB_CHECKPOINTS), except release.json.wsig, which goes to
+#                           latest/release.json.wsig, beside the release manifest it signs (cdn.rs LATEST).
 #
 # WOLOS_CDN_UPLOAD_TOKEN   the token (secret of the sign environment), handed to cdn-put as UPLOAD_TOKEN
 # CDN_BASE                 the upload server, default what cdn-put knows (its own default)
@@ -18,8 +22,14 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 dir=${1:?usage: publish.sh <dir>}
 public=${CDN_PUBLIC:-https://cdn.wolos.org}
-files=(revoked.json revoked.json.wsig index.json.wsig index.json.sig index.json)
+# Intermediates and the emergency section first (a client needs them to check the rest), then the database and its
+# checkpoint, then the list, the signatures, and index.json last.
+files=(intermediates.json revoked.rkdb revoked.checkpoint.json revoked.json revoked.json.wsig index.json.wsig index.json.sig index.json)
 for f in "${files[@]}"; do [ -s "$dir/$f" ] || { echo "publish: $dir/$f is missing" >&2; exit 1; }; done
+[ ! -s "$dir/emergency.rkdr" ] || files=(emergency.rkdr "${files[@]}")
+# The release manifest's signature is the one file outside plugins/: it lives beside release.json under latest/.
+[ ! -s "$dir/release.json.wsig" ] || files+=(release.json.wsig)
+target() { case $1 in release.json.wsig) echo "latest/$1" ;; *) echo "plugins/$1" ;; esac; }
 # Release statements go first of all: the index points at them.
 if [ -d "$dir/statements" ]; then
     mapfile -t statements < <(cd "$dir" && find statements -name '*.wsig' | LC_ALL=C sort)
@@ -27,7 +37,7 @@ if [ -d "$dir/statements" ]; then
 fi
 
 if [ "${DRY_RUN:-0}" = 1 ]; then
-    for f in "${files[@]}"; do echo "dry run: would upload $dir/$f to plugins/$f ($(wc -c <"$dir/$f") bytes)"; done
+    for f in "${files[@]}"; do echo "dry run: would upload $dir/$f to $(target "$f") ($(wc -c <"$dir/$f") bytes)"; done
     exit 0
 fi
 
@@ -36,7 +46,7 @@ export UPLOAD_TOKEN=$WOLOS_CDN_UPLOAD_TOKEN
 extra=()
 [ -z "${CDN_BASE:-}" ] || extra=(--base "$CDN_BASE")
 for f in "${files[@]}"; do
-    "$here/../tools/cdn-put" "$dir/$f" "plugins/$f" "${extra[@]}"
+    "$here/../tools/cdn-put" "$dir/$f" "$(target "$f")" "${extra[@]}"
 done
 
 # Read back what clients will read. The CDN may need a moment; the files must match byte for byte.
@@ -44,10 +54,10 @@ for f in "${files[@]}"; do
     want=$(sha256sum "$dir/$f" | cut -d' ' -f1)
     ok=0
     for try in 1 2 3 4 5 6; do
-        got=$(curl -fsS --max-time 30 -H 'Cache-Control: no-cache' "$public/plugins/$f" | sha256sum | cut -d' ' -f1 || true)
+        got=$(curl -fsS --max-time 30 -H 'Cache-Control: no-cache' "$public/$(target "$f")" | sha256sum | cut -d' ' -f1 || true)
         if [ "$got" = "$want" ]; then ok=1; break; fi
         sleep $((try * 5))
     done
-    [ "$ok" = 1 ] || { echo "publish: $public/plugins/$f does not serve the file that was uploaded" >&2; exit 1; }
-    echo "published: $public/plugins/$f ($want)"
+    [ "$ok" = 1 ] || { echo "publish: $public/$(target "$f") does not serve the file that was uploaded" >&2; exit 1; }
+    echo "published: $public/$(target "$f") ($want)"
 done

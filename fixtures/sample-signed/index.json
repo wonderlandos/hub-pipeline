@@ -118,7 +118,7 @@
   "intermediates": [],
   "revoked": {
     "url": "https://cdn.wolos.org/plugins/revoked.json",
-    "sha256": "3a1f8ba0968c4f20c63ebbaec58b7eab4aa1e8ccf6a32a7d32bb60a3b534f939",
+    "sha256": "0c8cced4ece59e51cfa75756894387bbc1d885411bf784a2a980141773477cc4",
     "serial": 42
   }
 }

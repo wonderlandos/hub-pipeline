@@ -15,7 +15,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { die, parseArgs, readJson, sha256Hex, validate } from "./lib.mjs";
+import { die, isSerial, parseArgs, readJson, sha256Hex, validate } from "./lib.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const schema = (name) => readJson(join(here, "..", "schema", `${name}.schema.json`));
@@ -140,13 +140,13 @@ export function checkRequest(req) {
   return errors;
 }
 
-/** A .wsig is {cert, ed25519, second}: all strings, cert 16 hex, the halves base64url. */
+/** A .wsig is {cert, ed25519, second}: all strings, cert a certificate id (lib.mjs SERIAL), the halves base64url. */
 export function checkWsig(w) {
   const errors = [];
   if (!w || typeof w !== "object" || Array.isArray(w)) return ["not an object"];
   const keys = Object.keys(w).sort().join(",");
   if (keys !== "cert,ed25519,second") errors.push(`fields are ${keys}, expected cert, ed25519, second`);
-  if (!/^[0-9a-f]{16}$/.test(w.cert ?? "")) errors.push("cert is 16 lowercase hex characters");
+  if (!isSerial(w.cert)) errors.push("cert is a certificate id (128 lowercase hex characters, or a 16-hex serial)");
   for (const k of ["ed25519", "second"]) if (!/^[A-Za-z0-9_-]+$/.test(w[k] ?? "")) errors.push(`${k} is base64url`);
   if (/^[A-Za-z0-9_-]+$/.test(w.ed25519 ?? "") && Buffer.from(w.ed25519, "base64url").length !== 64) errors.push("ed25519 is 64 bytes");
   return errors;
