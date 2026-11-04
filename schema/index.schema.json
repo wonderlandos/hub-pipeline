@@ -62,7 +62,7 @@
         "sha256": { "$ref": "#/$defs/sha256", "description": "Of the release asset, pinned at the first check. A different file at the same URL is refused." },
         "size": { "type": "integer", "minimum": 1, "maximum": 1073741824 },
         "trust": { "enum": ["wolos", "verified", "community"] },
-        "cert": { "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "Serial of the leaf certificate that signed the file (trust wolos or verified)." },
+        "cert": { "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "Serial of the leaf certificate that signed the file (trust wolos or verified), from hubcheck's report through the Worker's export." },
         "verdict": { "enum": ["pass", "flag"], "description": "block and not-checked releases are never listed." },
         "findings": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/finding" } },
         "owner": {
@@ -86,9 +86,9 @@
         },
         "first_seen": { "type": "integer", "minimum": 1 },
         "yanked": { "type": "boolean" },
-        "kinds": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Plugins only; today's field, read by 0.12." },
-        "permissions": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Plugins only; today's field, shown before Install." },
-        "min_wolos": { "type": "string", "pattern": "^([0-9]{1,4}\\.[0-9]{1,4}(\\.[0-9]{1,4})?)?$" },
+        "kinds": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Plugins only; today's field, read by 0.12. From the plugin.toml sections, through the Worker's export." },
+        "permissions": { "type": "array", "maxItems": 16, "items": { "type": "string" }, "description": "Plugins only (an extension.toml has none); today's field, shown before Install. From plugin.toml, through the Worker's export." },
+        "min_wolos": { "type": "string", "pattern": "^([0-9]{1,4}\\.[0-9]{1,4}(\\.[0-9]{1,4})?)?$", "description": "From the manifest, through the Worker's export; a signed file needs 0.13." },
         "capabilities": { "type": "array", "maxItems": 64, "items": { "type": "string" }, "description": "Apps only." },
         "categories": { "type": "array", "maxItems": 8, "items": { "type": "string" }, "description": "Apps only." },
         "host": { "type": "string", "description": "Extensions only: the app id it extends." }
@@ -109,7 +109,7 @@
     "extension": {
       "allOf": [
         { "$ref": "#/$defs/entry" },
-        { "required": ["host"], "properties": { "host": { "type": "string", "minLength": 3, "maxLength": 64 }, "kinds": false, "permissions": false, "capabilities": false, "categories": false } }
+        { "required": ["host"], "properties": { "url": { "pattern": "\\.wolext$" }, "host": { "type": "string", "minLength": 3, "maxLength": 64 }, "kinds": false, "permissions": false, "capabilities": false, "categories": false } }
       ]
     }
   }

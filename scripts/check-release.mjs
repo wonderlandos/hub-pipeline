@@ -6,19 +6,25 @@
 //
 //   check-release.mjs --pending pending.json --out verdicts.json [--work dir]
 //
-// HUBCHECK_BIN   path of the native hubcheck (HUB-wasm, wonderlandos/hub wasm/bin/hubcheck). Missing = nothing
-//                is decided: every release gets "not-checked", never "pass".
-// HUBCHECK_SECS  time limit for one file, default 120
-// MAX_ASSET      largest file checked, default 1 GiB (ADR 0047 H6)
+// HUBCHECK_BIN    path of the native hubcheck (scripts/tool.sh hubcheck: wonderlandos/hub wasm/, tools/hubcheck.rev).
+//                 Missing = nothing is decided: every release gets "not-checked", never "pass".
+// HUBCHECK_STORE  the trust store (scripts/store.mjs: pinned roots, intermediates, the last revocation list). Missing =
+//                 not-checked as well: a verdict without the signature check is not the check.
+// HUBCHECK_SECS   time limit for one file, default 120
+// MAX_ASSET       largest file checked, default 1 GiB (ADR 0047 H6)
+// HUB_NOW         the time hubcheck checks at (tests), default now
 // HUB_TEST=1 with --assets-dir <dir>: take <dir>/<asset_name> instead of downloading (local dry runs only)
 //
-// hubcheck interface this script relies on (to be confirmed by HUB-wasm, ADR 0047):
-//   hubcheck --json --kind app|plugin|extension --id ID --version V [--host APP] [--previous-version P] FILE
-//   stdout: {"verdict":"pass|flag|block|not-checked","findings":[{"rule","sentence","evidence"}]}
-//   exit 0 when it decided; anything else = it did not decide.
+// hubcheck's command line (wonderlandos/hub wasm/README.md, interface I7), the one this script calls:
+//   hubcheck inspect app|plugin|extension FILE --store store.json --now UNIX [--first-seen UNIX]
+//   stdout, one line: {"verdict":"pass|flag|block|not-checked","findings":[{"rule","sentence","evidence"}],
+//                      "trust":"wolos|verified|community|withdrawn|invalid","cert"?:{"serial",...},"origin"?:{...}}
+//   exit 0 whenever a report was printed, 1 when the file could not be read, 2 for a wrong command line.
+// The verdict is hubcheck's, unchanged: this script adds only what hubcheck cannot know (the download, the size
+// GitHub listed, the time limit) and turns every failure of the tool into not-checked.
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { die, jsonText, parseArgs, readJson, sha256Hex, writeAtomic } from "./lib.mjs";
 import { readFileSync } from "node:fs";
 
@@ -64,8 +70,8 @@ export function cleanOutput(text) {
   const cut = (s, n) => String(s ?? "").replace(CONTROL, " ").slice(0, n);
   const findings = o.findings.slice(0, 200).map((f) => finding(cut(f?.rule, 64) || "check/unnamed", cut(f?.sentence, 500) || "A rule was broken.", cut(f?.evidence, 1000)));
   const out = { verdict: o.verdict, findings };
-  // Optional, from the trust crate behind hubcheck (I7): who signed the file. TODO(ADR 0047): the Worker's
-  // verdict endpoint has no trust or cert field yet; it ignores them until it does.
+  // From the trust crate behind hubcheck (I7): what the signature is worth and who signed. The Worker stores them
+  // with the verdict (HUB-worker-2); verdicts.mjs passes them through.
   if (TRUST.includes(o.trust)) out.trust = o.trust;
   if (typeof o.cert?.serial === "string" && /^[0-9a-f]{16}$/.test(o.cert.serial)) out.cert = o.cert.serial;
   return out;
@@ -92,11 +98,10 @@ function download(r, dest, assetsDir) {
   return "no answer";
 }
 
-function runHubcheck(bin, r, file, work) {
-  const args = ["--json", "--kind", r.kind, "--id", r.listing_id, "--version", r.version];
-  if (r.kind === "extension" && r.host) args.push("--host", r.host);
-  if (r.previous) args.push("--previous-version", r.previous);
-  args.push(file);
+function runHubcheck(bin, store, r, file, work) {
+  const now = String(Number(process.env.HUB_NOW ?? Math.floor(Date.now() / 1000)));
+  const args = ["inspect", r.kind, resolve(file), "--store", store, "--now", now];
+  if (Number.isSafeInteger(r.first_seen) && r.first_seen > 0) args.push("--first-seen", String(r.first_seen));
   // An empty environment and a scratch directory: the checker needs nothing else.
   const p = spawnSync(bin, args, { cwd: work, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: HUBCHECK_SECS * 1000, maxBuffer: 2 << 20 });
   if (p.error?.code === "ETIMEDOUT") return { timeout: true };
@@ -104,7 +109,7 @@ function runHubcheck(bin, r, file, work) {
   return { out: cleanOutput(p.stdout) };
 }
 
-export function checkOne(r, { work, hubcheck, assetsDir }) {
+export function checkOne(r, { work, hubcheck, store, assetsDir }) {
   const v = (verdict, findings, extra = {}) => ({ listing_id: r.listing_id, version: r.version, verdict, ...extra, findings });
   if (r.size != null && r.size > MAX_ASSET) {
     return v("not-checked", [finding("size/too-large", `The file is larger than the ${MAX_ASSET >> 20} MiB the hub checks, so it was not checked.`)]);
@@ -122,7 +127,10 @@ export function checkOne(r, { work, hubcheck, assetsDir }) {
   if (!hubcheck || !existsSync(hubcheck)) {
     return v("not-checked", [finding("check/unavailable", "The checker is not installed in this run, so nothing was decided.")], { sha256, size });
   }
-  const res = runHubcheck(hubcheck, r, file, work);
+  if (!store || !existsSync(store)) {
+    return v("not-checked", [finding("check/unavailable", "The trust store is missing in this run, so nothing was decided.")], { sha256, size });
+  }
+  const res = runHubcheck(hubcheck, store, r, file, work);
   if (res.timeout) return v("not-checked", [finding("check/timeout", `The checker did not finish in ${HUBCHECK_SECS} seconds, so nothing was decided.`)], { sha256, size });
   if (res.failed || !res.out) return v("not-checked", [finding("check/tool-failed", "The checker stopped before it finished, so nothing was decided.")], { sha256, size });
   const { trust, cert } = res.out;
@@ -137,6 +145,7 @@ function main() {
   const { releases } = readJson(opts.pending);
   if (!Array.isArray(releases)) die(`${opts.pending}: no releases list`);
   const hubcheck = process.env.HUBCHECK_BIN;
+  const store = process.env.HUBCHECK_STORE ? resolve(process.env.HUBCHECK_STORE) : undefined;
   const verdicts = [];
   for (const r of releases) {
     const bad = badRow(r);
@@ -144,7 +153,7 @@ function main() {
       process.stderr.write(`skipped a pending row: ${bad} is not valid\n`);
       continue;
     }
-    const v = checkOne(r, { work, hubcheck, assetsDir: opts["assets-dir"] });
+    const v = checkOne(r, { work, hubcheck, store, assetsDir: opts["assets-dir"] });
     process.stdout.write(`${r.listing_id} ${r.version}: ${v.verdict}${v.findings.length ? ` (${v.findings.map((f) => f.rule).join(", ")})` : ""}\n`);
     verdicts.push(v);
   }

@@ -1,13 +1,19 @@
 # Test keys
 
-No key file lives here. `scripts/test-keys.mjs <dir>` derives three throw-away Ed25519 keys from fixed seeds
-(`legacy`, `index`, `ca`) when a local dry run or the repository's own CI needs them. They protect nothing, sign
-nothing real and are labelled test everywhere they appear. The real keys are secrets of the `sign` and `ca`
-environments (README at the root) and never touch a file in git.
+No key file lives here. Every key a local dry run or this repository's CI uses derives from a public name, so anyone can
+rebuild it and it protects nothing. `scripts/test-keys.mjs <dir>` writes them when a run needs them; they are labelled
+test everywhere they appear. The real keys are secrets of the `sign` and `ca` environments (README at the root) and never
+touch a file in git.
 
-- `legacy`: stands in for the legacy Ed25519 key of the 0.12 plugin index (`index.json.sig`).
-- `index`: the Ed25519 half of the stand-in for the Index intermediate (`index.json.wsig`, `revoked.json.wsig`).
-- `ca`: the Ed25519 half of the stand-in for the Authors CA (`.wolcert` files of the `ca` workflow).
+- `legacy`: Ed25519 from the seed `[1;32]`, standing in for the legacy key of the 0.12 plugin index (`index.json.sig`).
+- `index`: woltrust key material of `test-index`, the TEST Index intermediate of woltrust's TEST authority
+  (`woltrust::pki`: seed = SHA-512(`woltrust/testseed/test-index`)[0..32], serial = SHA-512(`woltrust/serial/test-index`)[0..8],
+  `0e972272c2e22af3`). Signs `index.json.wsig` and `revoked.json.wsig` in dry runs, with the real woltrust.
+- `authors`: the same for `test-authors`, the TEST Authors CA (`2ae32495ac831014`). Issues certificates in dry runs.
+- `hub-index-request-alice` (test.sh only): the key of the TEST request `fixtures/request-issue.json`, to sign a file with the
+  certificate the test issues.
 
-The woltrust stand-in (`scripts/woltrust-stub.mjs`) signs the Ed25519 half for real and puts an unmistakable
-placeholder in the second half, so nothing made with these keys can ever verify in woltrust.
+Their certificates are `fixtures/trust/` (written by `fixtures/gen/run.sh`): `roots/test-root-a.wolcert` and
+`intermediates/test-{index,authors}.wolcert`, the same bytes as woltrust's vectors and hubcheck's fixtures. Their subject labels
+start with `test`, so woltrust and hubcheck refuse the root unless asked (`--allow-test`, `allow_test`), and `scripts/store.mjs`
+allows that only with `HUB_TEST=1` or `DRY_RUN=1`. A file signed by the TEST authority verifies only in a test.

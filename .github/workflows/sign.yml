@@ -5,14 +5,16 @@
 # schema/index.schema.json and checks each new entry against GitHub itself.
 #
 # Environment "sign" holds (names only, values live in the environment's secrets and never in git):
-#   secrets  WOLOS_INDEX_SIGNING_KEY    the Index intermediate's key material, for woltrust
+#   secrets  WOLOS_INDEX_SIGNING_KEY    the Index intermediate's key material, for woltrust (plain or a locked .wolkey)
+#            WOLOS_KEY_PASSPHRASE       the passphrase of a locked .wolkey (woltrust --passphrase-env)
 #            WOLOS_LEGACY_INDEX_KEY     the legacy Ed25519 key of the 0.12 index (PEM, PKCS#8)
 #            WOLOS_CDN_UPLOAD_TOKEN     the CDN upload token (cdn-put's UPLOAD_TOKEN)
 #   vars     INDEX_CERT_SERIAL          serial of the Index intermediate's certificate (16 hex)
 #            CDN_BASE (optional)        the upload server, if not cdn-put's own default
 #
-# Manual runs default to a DRY RUN: test keys, stand-in woltrust, nothing uploaded, nothing committed; the result
-# is kept as a run artifact. Set dry_run=false to publish.
+# Manual runs default to a DRY RUN: the real woltrust with the TEST Index intermediate of woltrust (scripts/test-keys.mjs),
+# nothing uploaded, nothing committed; the result is kept as a run artifact. Set dry_run=false to publish.
+# The tools are built from their pinned commits in this job, never taken from a cache: this job holds the keys.
 name: sign
 
 on:
@@ -57,15 +59,17 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Check the scripts and fixtures first
-        run: scripts/test.sh
-
-      - name: Build woltrust (pinned)
-        if: env.DRY_RUN != '1'
-        id: woltrust
+      - name: Build woltrust and hubcheck (pinned, from source)
+        id: tools
         run: |
-          # TODO(ADR 0046): tools/woltrust.rev is "unpinned" until the woltrust crate has its command line; a real run stops here.
-          echo "bin=$(scripts/tool.sh woltrust)" >> "$GITHUB_OUTPUT"
+          echo "woltrust=$(scripts/tool.sh woltrust | tail -n 1)" >> "$GITHUB_OUTPUT"
+          echo "hubcheck=$(scripts/tool.sh hubcheck | tail -n 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Check the scripts and fixtures first
+        env:
+          WOLTRUST_BIN: ${{ steps.tools.outputs.woltrust }}
+          HUBCHECK_BIN: ${{ steps.tools.outputs.hubcheck }}
+        run: scripts/test.sh
 
       - name: Get the export
         run: |
@@ -107,13 +111,14 @@ jobs:
       - name: Sign (legacy Ed25519 and hybrid)
         if: steps.need.outputs.publish == 'yes'
         env:
-          WOLTRUST_BIN: ${{ steps.woltrust.outputs.bin }}
+          WOLTRUST_BIN: ${{ steps.tools.outputs.woltrust }}
           WOLOS_INDEX_SIGNING_KEY: ${{ secrets.WOLOS_INDEX_SIGNING_KEY }}
+          WOLOS_KEY_PASSPHRASE: ${{ secrets.WOLOS_KEY_PASSPHRASE }}
           WOLOS_LEGACY_INDEX_KEY: ${{ secrets.WOLOS_LEGACY_INDEX_KEY }}
           CERT: ${{ vars.INDEX_CERT_SERIAL }}
         run: |
-          # In a dry run the stand-in signs with test keys and these secrets are not read.
-          if [ "$DRY_RUN" = 1 ]; then CERT=${CERT:-7e57000000000001}; fi
+          # A dry run signs as the TEST Index intermediate (scripts/test-keys.mjs); these secrets are not read.
+          if [ "$DRY_RUN" = 1 ]; then CERT=$(node -e 'import("./scripts/test-keys.mjs").then((m) => console.log(m.testSerial(m.TEST.index)))'); fi
           scripts/sign-files.sh work/out "${CERT:?the variable INDEX_CERT_SERIAL is not set in the sign environment}"
 
       - name: Upload to the CDN

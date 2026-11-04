@@ -65,15 +65,27 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: pending
+      # This job's own cache (key prefix scan-, no other workflow restores it), saved right after the build and before
+      # any untrusted file is opened, so nothing the scan meets can end up in it.
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: cache
+        with:
+          path: ~/.cache/hub-index-tools
+          key: scan-hubcheck-${{ hashFiles('tools/hubcheck.rev', 'scripts/tool.sh') }}
       - name: Build the pinned hubcheck
         id: tool
-        run: |
-          # TODO(ADR 0047): tools/hubcheck.rev is "unpinned" until HUB-wasm ships wasm/bin/hubcheck. Until then the job stops here
-          # and nothing is posted: a release is never decided without the checker (check-release.mjs would say not-checked).
-          echo "bin=$(scripts/tool.sh hubcheck)" >> "$GITHUB_OUTPUT"
+        run: echo "bin=$(scripts/tool.sh hubcheck | tail -n 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/hub-index-tools
+          key: scan-hubcheck-${{ hashFiles('tools/hubcheck.rev', 'scripts/tool.sh') }}
+      - name: The trust store (pinned roots, intermediates, the last signed revocation list)
+        run: node scripts/store.mjs --roots certs/roots --intermediates certs/intermediates --list signed/revoked.json --out "$RUNNER_TEMP/store.json"
       - name: Fetch and check every pending release
         env:
           HUBCHECK_BIN: ${{ steps.tool.outputs.bin }}
+          HUBCHECK_STORE: ${{ runner.temp }}/store.json
         run: node scripts/check-release.mjs --pending pending.json --out verdicts.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

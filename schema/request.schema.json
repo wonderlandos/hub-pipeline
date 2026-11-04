@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/wonderlandos/hub-index/blob/main/schema/request.schema.json",
   "title": "Certificate request file (requests/<name>.json) read by the ca workflow",
-  "description": "One file, one action. The hub Worker's own request format (POST /api/certs/requests, phase 2) is converted to this by the CA operator. A revoke for reason abuse needs two distinct approvers (ADR 0046).",
+  "description": "One file, one action. An issue request is written by the hub Worker when an admin approves a certificate request in the admin panel (approved_by, approved_at; the ca workflow fetches it by its id, see README \"How a certificate is issued\"), or by the CA operator by hand. woltrust's `wol cert request` makes the part from format to requested_at (woltrust::request::Request); the Worker adds id, subject.org, verified_at and the approval. A revoke for reason abuse needs two distinct approvers (ADR 0046).",
   "oneOf": [
     {
       "type": "object",
@@ -15,7 +15,9 @@
         "namespaces",
         "keys",
         "proof",
-        "requested_at"
+        "requested_at",
+        "approved_by",
+        "approved_at"
       ],
       "properties": {
         "format": {
@@ -23,6 +25,11 @@
         },
         "action": {
           "const": "issue"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+          "description": "The Worker's request id; the file is requests/<id>.json. Absent in a request the CA operator wrote by hand."
         },
         "kind": {
           "enum": [
@@ -52,6 +59,26 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 80
+            },
+            "org": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "github_id",
+                "login"
+              ],
+              "description": "Person only: the organisation the hub saw the person in (GitHub membership), copied into the certificate as subject.org.",
+              "properties": {
+                "github_id": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "login": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$",
+                  "maxLength": 39
+                }
+              }
             }
           }
         },
@@ -79,8 +106,17 @@
             "ml-dsa-65": {
               "type": "string",
               "pattern": "^[A-Za-z0-9_-]{2000,2800}$"
+            },
+            "x25519": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            "ml-kem-768": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1579}$"
             }
-          }
+          },
+          "description": "Public keys, base64url without padding. x25519 and ml-kem-768 (encryption, wolos/seal/1) come both or not at all; the proof covers all of them."
         },
         "level": {
           "enum": [
@@ -103,7 +139,7 @@
             "ed25519",
             "second"
           ],
-          "description": "Proof of possession of both private keys over the request (checked by the Worker with hubcheck, and again by `woltrust issue --proof`).",
+          "description": "Proof of possession: a hybrid signature with the new keys, label wolos/request/1, over \"{github_id}\\n{kind}\\n{ed25519}\\n{ml-dsa-65}\\n{slh-dsa-sha2-128s}\\n{x25519}\\n{ml-kem-768}\\n\" (woltrust::request::proof_content; empty for an absent key). Checked again by `woltrust issue --proof`.",
           "properties": {
             "ed25519": {
               "type": "string",
@@ -114,6 +150,27 @@
               "pattern": "^[A-Za-z0-9_-]{100,6000}$"
             }
           }
+        },
+        "verified_at": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "When the hub last verified the GitHub account; copied into the certificate (else the time of issue)."
+        },
+        "approved_by": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$",
+            "maxLength": 39
+          },
+          "description": "GitHub logins of the hub admins who approved (never the subject)."
+        },
+        "approved_at": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "When the admin approved."
         }
       }
     },
@@ -152,8 +209,10 @@
           "maxItems": 4,
           "items": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$"
-          }
+            "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$",
+            "maxLength": 39
+          },
+          "description": "GitHub logins of the hub admins who approved (never the subject)."
         },
         "note": {
           "type": "string",

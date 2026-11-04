@@ -7,6 +7,8 @@
 //   api.mjs pending  --out pending.json        GET  /api/pipeline/pending   (check)
 //   api.mjs verdicts --in verdicts.json        POST /api/pipeline/verdicts  (check)
 //   api.mjs export   --out export.json         GET  /api/pipeline/export    (sign)
+//   api.mjs request  --id ID --out requests/ID.json   GET  /api/pipeline/requests/ID   (ca: an approved issue request)
+//   api.mjs issued   --in result.json          POST /api/pipeline/certs     (ca: {request_id, serial, cert})
 //
 // HUB_API        base URL, default https://hub.wolos.org (https only; http://127.0.0.1 only with HUB_TEST=1)
 // HUB_TOKEN      a token to use as is (tests); otherwise one is requested from GitHub for this job
@@ -17,6 +19,7 @@ const AUDIENCE = process.env.HUB_AUDIENCE ?? "hub.wolos.org";
 const BASE = (process.env.HUB_API ?? "https://hub.wolos.org").replace(/\/+$/, "");
 const MAX_BODY = 8 << 20;
 const BATCH = 50; // the Worker takes 1..100 and 256 KiB per call
+const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/; // schema/request.schema.json, id
 
 export function checkBase(base, test) {
   const u = new URL(base);
@@ -99,7 +102,21 @@ async function main() {
     if (data.preview !== false) throw new Error("the export is marked as a preview; not signing it");
     writeAtomic(opts.out, jsonText(data));
     process.stdout.write(`export: ${data.apps.length} app(s), ${data.plugins.length} plugin(s), ${data.extensions.length} extension(s)\n`);
-  } else die("usage: api.mjs pending|verdicts|export ...", 2);
+  } else if (cmd === "request") {
+    if (!opts.id || !opts.out) die("request needs --id and --out", 2);
+    if (!REQUEST_ID.test(opts.id)) throw new Error(`${opts.id}: not a request id`);
+    const data = await call("GET", `/api/pipeline/requests/${opts.id}`);
+    // The Worker answers with the request file itself; the ca workflow validates it against the schema next.
+    if (data.id !== opts.id || data.action !== "issue") throw new Error(`the answer is not the issue request ${opts.id}`);
+    writeAtomic(opts.out, jsonText(data));
+    process.stdout.write(`request ${opts.id}: ${data.kind} ${data.subject?.login}, approved by ${(data.approved_by ?? []).join(", ") || "nobody"}\n`);
+  } else if (cmd === "issued") {
+    if (!opts.in) die("issued needs --in", 2);
+    const r = readJson(opts.in);
+    if (!REQUEST_ID.test(r.request_id ?? "") || !/^[0-9a-f]{16}$/.test(r.serial ?? "") || typeof r.cert !== "string") throw new Error(`${opts.in}: not an issue result`);
+    await call("POST", "/api/pipeline/certs", { request_id: r.request_id, serial: r.serial, cert: r.cert });
+    process.stdout.write(`the hub knows certificate ${r.serial} for request ${r.request_id}\n`);
+  } else die("usage: api.mjs pending|verdicts|export|request|issued ...", 2);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) main().catch((e) => die(e.message));
