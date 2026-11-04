@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
-// woltrust's own readers and verifier against a hub-index sample. Copy to crates/woltrust/tests/ in a wolos checkout,
-// run with HUBINDEX_SAMPLE=<hub-index>/fixtures/sample-signed HUBINDEX_TRUST=<hub-index>/fixtures/trust, delete (see README).
+// woltrust's own readers and verifier against a hub-pipeline sample. Copy to crates/woltrust/tests/ in a wolos checkout,
+// run with HUBINDEX_SAMPLE=<hub-pipeline>/fixtures/sample-signed HUBINDEX_TRUST=<hub-pipeline>/fixtures/trust, delete (see README).
 use std::{env, fs};
 use woltrust::{Input, Purpose, Store, Trust};
 

@@ -9,7 +9,7 @@
 #   woltrust   wonderlandos/wolos  crates/woltrust cargo build --release --locked -p woltrust --bin woltrust (ADR 0046)
 #
 # The source is a fresh clone checked out at exactly that commit, never a working tree: what is built is what the
-# commit id names. The binary is kept in $TOOL_CACHE/<name>-<rev>/bin (default ~/.cache/hub-index-tools; ci.yml and the
+# commit id names. The binary is kept in $TOOL_CACHE/<name>-<rev>/bin (default ~/.cache/hub-pipeline-tools; ci.yml and the
 # scan job of check.yml keep it in actions/cache under a key with the commit id; sign.yml and ca.yml, which hold
 # secrets, always build afresh), so a second call builds nothing.
 #
@@ -31,7 +31,7 @@ if [ "$rev" = unpinned ]; then
 fi
 [[ $rev =~ ^[0-9a-f]{40}$ ]] || { echo "tool: tools/$name.rev is neither a 40-digit commit id nor 'unpinned'" >&2; exit 2; }
 
-cache=${TOOL_CACHE:-${HOME:?}/.cache/hub-index-tools}/$name-$rev
+cache=${TOOL_CACHE:-${HOME:?}/.cache/hub-pipeline-tools}/$name-$rev
 bin=$cache/bin/$name
 if [ -x "$bin" ] && [ "$(cat "$cache/rev" 2>/dev/null)" = "$rev" ]; then
     echo "tool: $name $rev from the cache" >&2

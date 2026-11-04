@@ -1,14 +1,18 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # sign: build the index from the Worker's export, sign it with the Index intermediate, upload it, and commit the
-# published files to signed/ as the public log (ADR 0047, ADR 0046). This is the only workflow that holds the
-# signing keys and the upload token, and it parses no release file: it reads the Worker's JSON, checks it against
-# schema/index.schema.json and checks each new entry against GitHub itself.
+# published files to signed/ of the public log, wonderlandos/hub-log (ADR 0047, ADR 0046). This is the only workflow
+# that holds the signing keys and the upload token, and it parses no release file: it reads the Worker's JSON, checks it
+# against schema/index.schema.json and checks each new entry against GitHub itself.
+#
+# This repository (wonderlandos/hub-pipeline, private) holds the code; the job reads and writes the log in a second
+# checkout at log/ (certs/, revocations.json, signed/) and pushes only there, with the environment's deploy key.
 #
 # Environment "sign" holds (names only, values live in the environment's secrets and never in git):
 #   secrets  WOLOS_INDEX_SIGNING_KEY    the Index intermediate's key material, for woltrust (plain or a locked .wolkey)
 #            WOLOS_KEY_PASSPHRASE       the passphrase of a locked .wolkey (woltrust --passphrase-env)
 #            WOLOS_LEGACY_INDEX_KEY     the legacy Ed25519 key of the 0.12 index (PEM, PKCS#8)
 #            WOLOS_CDN_UPLOAD_TOKEN     the CDN upload token (cdn-put's UPLOAD_TOKEN)
+#            HUB_LOG_DEPLOY_KEY         this environment's write deploy key of wonderlandos/hub-log (ssh, private half)
 #   vars     INDEX_CERT_SERIAL          serial of the Index intermediate's certificate (16 hex)
 #            CDN_BASE (optional)        the upload server, if not cdn-put's own default
 #
@@ -37,7 +41,7 @@ on:
 
 # Shares nothing with check on purpose; the commit step rebases over its pushes.
 concurrency:
-  group: hub-index-sign
+  group: hub-pipeline-sign
   cancel-in-progress: false
 
 permissions: {}
@@ -49,7 +53,7 @@ jobs:
     timeout-minutes: 20
     environment: sign
     permissions:
-      contents: write   # signed/ (the public log)
+      contents: read    # this repository; the log is written with HUB_LOG_DEPLOY_KEY, not this token
       id-token: write   # the Worker's export
     env:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
@@ -58,6 +62,19 @@ jobs:
       CDN_BASE: ${{ vars.CDN_BASE }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Check out the public log (wonderlandos/hub-log)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: wonderlandos/hub-log
+          ref: main
+          path: log
+          ssh-key: ${{ secrets.HUB_LOG_DEPLOY_KEY }}
+
+      - name: The schema here is the one hub-log publishes
+        run: diff -r schema log/schema
 
       - name: Build woltrust and hubcheck (pinned, from source)
         id: tools
@@ -83,22 +100,22 @@ jobs:
           HUB_TEST: ${{ env.FIXTURES }}
         run: |
           if [ "$FIXTURES" = 1 ]; then
-            node scripts/verify-owners.mjs --export work/export.json --previous signed/index.json --fixture fixtures/github.json --out work/export.checked.json
+            node scripts/verify-owners.mjs --export work/export.json --previous log/signed/index.json --fixture fixtures/github.json --out work/export.checked.json
           else
-            node scripts/verify-owners.mjs --export work/export.json --previous signed/index.json --out work/export.checked.json
+            node scripts/verify-owners.mjs --export work/export.json --previous log/signed/index.json --out work/export.checked.json
           fi
 
       - name: Build revoked.json and index.json
         run: |
           mkdir -p work/out
-          [ -f revocations.json ] || echo '{"format":1,"entries":[]}' > revocations.json
-          node scripts/build-revoked.mjs --source revocations.json --previous signed/revoked.json --out work/out/revoked.json
+          [ -f log/revocations.json ] || echo '{"format":1,"entries":[]}' > log/revocations.json
+          node scripts/build-revoked.mjs --source log/revocations.json --previous log/signed/revoked.json --out work/out/revoked.json
           force=; [ "$FORCE" = 1 ] && force=--force
           # Release statements once the pinned woltrust signs them (tools/woltrust.features: statements).
           statements=; grep -qx statements <(sed 's/#.*//; s/ //g' tools/woltrust.features) && statements="--statements work/out/statements --statements-url https://cdn.wolos.org/plugins/statements"
           node scripts/build-index.mjs --export work/export.checked.json --revoked work/out/revoked.json \
-            --revoked-url "https://cdn.wolos.org/plugins/revoked.json" --previous signed/index.json \
-            --intermediates certs/intermediates --certs certs --revocations revocations.json $statements --out work/out/index.json $force
+            --revoked-url "https://cdn.wolos.org/plugins/revoked.json" --previous log/signed/index.json \
+            --intermediates log/certs/intermediates --certs log/certs --revocations log/revocations.json $statements --out work/out/index.json $force
           node scripts/validate.mjs index work/out/index.json --revoked work/out/revoked.json
           node scripts/validate.mjs revoked work/out/revoked.json
 
@@ -106,7 +123,7 @@ jobs:
         id: need
         run: |
           force=; [ "$FORCE" = 1 ] && force=--force
-          answer=$(node scripts/needs-publish.mjs --index work/out/index.json --revoked work/out/revoked.json --previous signed $force)
+          answer=$(node scripts/needs-publish.mjs --index work/out/index.json --revoked work/out/revoked.json --previous log/signed $force)
           echo "$answer"
           echo "publish=${answer%% *}" >> "$GITHUB_OUTPUT"
 
@@ -129,15 +146,15 @@ jobs:
           WOLOS_CDN_UPLOAD_TOKEN: ${{ secrets.WOLOS_CDN_UPLOAD_TOKEN }}
         run: scripts/publish.sh work/out
 
-      - name: Commit the published files to signed/
+      - name: Commit the published files to hub-log signed/
         if: steps.need.outputs.publish == 'yes' && env.DRY_RUN != '1'
         run: |
-          mkdir -p signed
-          cp work/out/index.json work/out/index.json.sig work/out/index.json.wsig work/out/revoked.json work/out/revoked.json.wsig signed/
-          if [ -d work/out/statements ]; then (cd work/out && find statements -name '*.wsig' -exec install -D -m 644 {} ../../signed/{} \;); fi
-          serial=$(node -p 'require("./signed/index.json").serial')
-          counts=$(node -p 'const i=require("./signed/index.json");i.apps.length+" apps, "+i.plugins.length+" plugins, "+i.extensions.length+" extensions"')
-          scripts/commit-log.sh "index $serial: $counts; revoked $(node -p 'require("./signed/revoked.json").serial')" signed
+          mkdir -p log/signed
+          cp work/out/index.json work/out/index.json.sig work/out/index.json.wsig work/out/revoked.json work/out/revoked.json.wsig log/signed/
+          if [ -d work/out/statements ]; then (cd work/out && find statements -name '*.wsig' -exec install -D -m 644 {} ../../log/signed/{} \;); fi
+          serial=$(node -p 'require("./log/signed/index.json").serial')
+          counts=$(node -p 'const i=require("./log/signed/index.json");i.apps.length+" apps, "+i.plugins.length+" plugins, "+i.extensions.length+" extensions"')
+          scripts/commit-log.sh "index $serial: $counts; revoked $(node -p 'require("./log/signed/revoked.json").serial')" signed
 
       - name: Keep the dry run
         if: always() && env.DRY_RUN == '1'

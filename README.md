@@ -1,29 +1,52 @@
-# WolOS Hub index
+# WolOS Hub pipeline (private)
 
-The signed index of the WolOS Hub and its public log: every index that was ever signed, every check verdict,
-every certificate and every revocation. Built and signed by GitHub Actions in this repository, nowhere else. Design:
-ADR 0047 (the Hub), ADR 0046 (author certificates). Licence GPL-2.0-or-later.
+The code and process of the WolOS Hub index: the check, sign and ca workflows, their scripts, the pinned tools, the test
+fixtures and the 0.12 compatibility tests. It builds and signs the index, issues and revokes author certificates, and
+writes every published result to the public log, **wonderlandos/hub-log**. Design: ADR 0047 (the Hub), ADR 0046 (author
+certificates). Licence GPL-2.0-or-later.
 
-Nothing is hosted here but metadata. Release files stay GitHub release assets, pinned by sha256.
+## Why this repository is private, and what moved
 
-## The public log
+Lead decision 2026-11-04 03:37Z: close the parts of the hub that only the hub runs, to cut the attack surface (no public map
+of the identity checks, the key handling, the request flow or the workflow conditions to probe). The public contract stays
+public: hub-log carries everything that is published and signed, and the JSON schemas; `wonderlandos/hub` keeps the site,
+the `hubcheck` crate (`wasm/`) and the legal texts; woltrust is public in `wonderlandos/wolos`.
+
+`wonderlandos/hub-index` was split in two, with history (`git filter-repo`):
+
+| here, private (wonderlandos/hub-pipeline) | public (wonderlandos/hub-log) |
+|---|---|
+| `.github/workflows/` (check, sign, ca, ci), `scripts/`, `tools/`, `fixtures/`, `compat/`, `docs/`, `requests/` (hand-written requests), this README | `signed/`, `verdicts/`, `certs/` (roots, intermediates, author certificates and their records), `revocations.json` |
+| `schema/` (a copy; every sign and ca run stops if it differs from hub-log's) | `schema/` (the public contract), a README on how to verify with woltrust |
+
+No workflow writes to this repository: each job checks this repository out read-only, checks hub-log out at `log/`, and
+`scripts/commit-log.sh` pushes only `signed/`, `verdicts/`, `certs/` and `revocations.json` there, with the job environment's
+deploy key (secret `HUB_LOG_DEPLOY_KEY`). Request files are never published any more: the ca job keeps the request it handled
+as a run artifact of this repository (90 days), and the Worker keeps its record; hub-log has the certificate, its record
+(`certs/<serial>.json`, with `request_id`, tier and approvers) and `revocations.json`.
+
+## The layout
 
 ```
+here (hub-pipeline)
+scripts/  tools/  fixtures/  compat/  docs/    the pipeline code, pinned tools, test data (fixtures/trust: the TEST authority), 0.12 compatibility tests
+.github/workflows/          check.yml  sign.yml  ca.yml  ci.yml
+requests/<name>.json        hand-written requests (a revocation, an operator's issue), reviewed into main
+schema/                     copy of hub-log's schema/
+
+log/ in every job = wonderlandos/hub-log
 signed/                     the last publication: index.json, index.json.sig, index.json.wsig, revoked.json, revoked.json.wsig
                             (git history of this folder = every index ever signed, append-only; commits come from the sign workflow)
 verdicts/<id>/<version>.json   one check verdict per release (verdict, findings, sha256, size, run, workflow sha)
-certs/<serial>.wolcert      every author certificate the Authors CA issued
+certs/<serial>.wolcert      every author certificate the Authors CA issued; certs/<serial>.json its record (tier, request_id, ...)
 certs/roots/                the public root certificates (the ones the image pins), for hubcheck and the sign job's self-check
 certs/intermediates/        intermediate certificates to carry in index.json (newer than the image's trust store)
-requests/*.json             certificate requests being handled; requests/done/ the handled ones
 revocations.json            the entries of the revocation list (appended by the ca workflow, never edited by hand)
 schema/                     index.schema.json (I3), revoked.schema.json, request.schema.json
-scripts/  tools/  fixtures/  compat/  docs/    the pipeline code, pinned tools, test data (fixtures/trust: the TEST authority), 0.12 compatibility tests
-.github/workflows/          check.yml  sign.yml  ca.yml  ci.yml
 ```
 
-Clients read the CDN, not this repository: `https://cdn.wolos.org/plugins/{index.json,index.json.sig,index.json.wsig,revoked.json,revoked.json.wsig}`.
-This repository is the log and the mirror (ADR 0047, option C): the same bytes, with history.
+Clients read the CDN, not a repository: `https://cdn.wolos.org/plugins/{index.json,index.json.sig,index.json.wsig,revoked.json,revoked.json.wsig}`.
+hub-log is the log and the mirror (ADR 0047, option C): the same bytes, with history.
 
 ## How a release gets listed
 
@@ -49,7 +72,7 @@ than half of a real one is not signed without a person saying `force`.
 
 1. A moderator or the CA operator writes `requests/<name>.json` (`action: revoke`, serial, reason, approvers; `abuse` needs two different people).
 2. The file reaches `main` through a reviewed pull request; they start **ca** with `request=requests/<name>.json`. It checks the request
-   against the schema, refuses a serial that was not issued here, appends `{serial, at, reason}` to `revocations.json`, moves the request to `requests/done/`, commits, and starts **sign**.
+   against the schema, refuses a serial that was not issued here, appends `{serial, at, reason}` to hub-log `revocations.json`, commits it there, and starts **sign**. Remove the request file in a later pull request.
 3. **sign** builds `revoked.json` (format 1, serial grows, `expires` = issued + 7 days, the exact shape woltrust reads), signs it with the Index
    intermediate (label `wolos/revocation/1`), and points the index at it (`revoked: {url, sha256, serial}`). Upload order: revoked.json and its
    .wsig first, index.json last.
@@ -83,15 +106,15 @@ Issuing needs no person in GitHub.
 2. For `origin`, the Worker checks its record that the CLA was accepted and adds `cla_accepted_at`. For `trusted`, a hub admin approves
    in the admin panel; the Worker refuses an admin approving their own request and adds `approved_by` (the admin's GitHub login) and
    `approved_at`. Then it stores the request as the file below and starts the ca workflow through the GitHub API:
-   `POST /repos/wonderlandos/hub-index/actions/workflows/ca.yml/dispatches` with `{"ref":"main","inputs":{"request_id":"<id>","dry_run":"false"}}`,
+   `POST /repos/wonderlandos/hub-pipeline/actions/workflows/ca.yml/dispatches` with `{"ref":"main","inputs":{"request_id":"<id>","dry_run":"false"}}`,
    using the hub GitHub App's installation token (on this repository it has `actions: write` and nothing else).
 3. **ca** asks the Worker for the request with its OIDC token: `GET /api/pipeline/requests/<id>` (the Worker accepts `ca.yml` on `main`,
    environment `ca`, audience `hub.wolos.org`, and answers only an approved request that has no certificate yet; the body is the request
    file itself). It writes `requests/<id>.json`, checks it against `schema/request.schema.json`, for `trusted` checks that every
    `approved_by` login is in the variable `CA_APPROVERS`, builds the certificate body (`ca.mjs certBody`: keys including x25519 and ml-kem-768, `subject.org`,
    `verified_at`), and `woltrust issue --proof` checks the proof again and signs exactly that body. `ca.mjs` checks the Ed25519 half
-   against the Authors CA certificate in `certs/intermediates/` before anything is written.
-4. It commits `certs/<serial>.wolcert`, `certs/<serial>.json` and `requests/done/<id>.json` (the public log), then tells the Worker:
+   against the Authors CA certificate in hub-log `certs/intermediates/` before anything is written.
+4. It commits `certs/<serial>.wolcert` and `certs/<serial>.json` to hub-log (the public log), keeps the request as a run artifact here, then tells the Worker:
    `POST /api/pipeline/certs` with `{"request_id","serial","tier","cert"}` (`cert` = the exact `.wolcert` text). The Worker shows the
    certificate to the author, who adds it with `wol cert add`.
 
@@ -106,7 +129,7 @@ reserved name or a look-alike of one (`validate.mjs` `RESERVED_NAMES`, `skeleton
 account's active certificate. The Worker's fields (approved_by, cla_accepted_at, verified_at, months) decide only whether the job runs.
 A revocation uses the job's clock (the request's `at` is ignored) and every approver must be in `CA_APPROVERS` (abuse: two).
 
-A second dispatch for the same id stops at once (`requests/done/<id>.json` exists); one GitHub account has one active certificate
+A second dispatch for the same id stops at once (a hub-log `certs/<serial>.json` has that `request_id`); one GitHub account has one active certificate
 per kind and tier (revoke the old one, reason `superseded`, first). A request file the CA operator writes by hand needs the same
 `cla_accepted_at` or `approved_by`; it reaches `main` through a reviewed pull request and is issued with `request=requests/<name>.json`.
 
@@ -115,7 +138,7 @@ from `main` (a workflow dispatch on `ref: main`, environment `ca` limited to `ma
 Worker needs only `actions: write`, so a taken-over Worker can start a run but cannot push a request, a script or a workflow
 (a bot that opens and merges pull requests needs `contents: write` and a way around review); no branch protection exception is
 needed; and the approval stays where it was given and authenticated (the admin's hub session), fetched by an OIDC-authenticated job,
-with the request committed in the same commit as the certificate it produced.
+with the certificate and its record (request id, tier, approvers) committed together to hub-log.
 
 The request file (`schema/request.schema.json`, action `issue`), as the Worker writes it:
 
@@ -172,26 +195,31 @@ Secret values live only in the repository's Environment settings. This repositor
 | Environment | Used by | Secrets | Variables | Rules |
 |---|---|---|---|---|
 | none | `ci.yml`, job `scan` of `check.yml` | none | none | `scan` has no `id-token`, no write right, no environment: it opens untrusted files and has nothing to lose |
-| `check` | jobs `fetch` and `report` of `check.yml` | none | none | OIDC only (audience `hub.wolos.org`); the Worker accepts this workflow file on `main` with environment `check`; it can read pending and post verdicts, not export |
-| `sign` | `sign.yml` | `WOLOS_INDEX_SIGNING_KEY` (Index intermediate), `WOLOS_KEY_PASSPHRASE` (when that key is a locked `.wolkey`), `WOLOS_LEGACY_INDEX_KEY` (legacy Ed25519 PEM), `WOLOS_CDN_UPLOAD_TOKEN` | `INDEX_CERT_SERIAL`, optional `CDN_BASE` | deployment branch `main` only; OIDC token can export, not post; parses no release file; tools built from source in the job, no cache |
-| `ca` | `ca.yml` | `WOLOS_AUTHORS_CA_KEY` (Authors CA intermediate), `WOLOS_KEY_PASSPHRASE` (when locked) | `AUTHORS_CA_SERIAL`, `CA_APPROVERS` (admin logins, comma separated) | deployment branch `main` only; no required reviewers (origin needs the CLA only; for trusted the second person is the approving admin, see "How a certificate is issued"); OIDC token reads approved requests and reports certificates; tools built from source, no cache |
+| `check` | jobs `fetch` and `report` of `check.yml` | `HUB_LOG_DEPLOY_KEY` (report pushes `verdicts/` to hub-log) | none | OIDC only (audience `hub.wolos.org`); the Worker accepts this workflow file on `main` with environment `check`; it can read pending and post verdicts, not export |
+| `sign` | `sign.yml` | `WOLOS_INDEX_SIGNING_KEY` (Index intermediate), `WOLOS_KEY_PASSPHRASE` (when that key is a locked `.wolkey`), `WOLOS_LEGACY_INDEX_KEY` (legacy Ed25519 PEM), `WOLOS_CDN_UPLOAD_TOKEN`, `HUB_LOG_DEPLOY_KEY` | `INDEX_CERT_SERIAL`, optional `CDN_BASE` | deployment branch `main` only; OIDC token can export, not post; parses no release file; tools built from source in the job, no cache |
+| `ca` | `ca.yml` | `WOLOS_AUTHORS_CA_KEY` (Authors CA intermediate), `WOLOS_KEY_PASSPHRASE` (when locked), `HUB_LOG_DEPLOY_KEY`, optional `CA_GITHUB_TOKEN` (members:read) | `AUTHORS_CA_SERIAL`, `CA_APPROVERS` (admin logins, comma separated) | deployment branch `main` only; no required reviewers (origin needs the CLA only; for trusted the second person is the approving admin, see "How a certificate is issued"); OIDC token reads approved requests and reports certificates; tools built from source, no cache |
 
 `WOLOS_KEY_PASSPHRASE` is one secret name in both environments, as `woltrust init` prints it (`ci/passphrase`); woltrust reads it only when
-the key secret is a locked `.wolkey` (`--passphrase-env WOLOS_KEY_PASSPHRASE`). Before the first real run, `certs/roots/` and
+the key secret is a locked `.wolkey` (`--passphrase-env WOLOS_KEY_PASSPHRASE`). `HUB_LOG_DEPLOY_KEY` is one secret name in the three
+environments with three different values: three write deploy keys of hub-log (`hub-pipeline check`, `hub-pipeline sign`, `hub-pipeline ca`), so
+one can be removed without the others. Before the first real run, hub-log `certs/roots/` and
 `certs/intermediates/` get the public certificates `woltrust init` wrote (`public/roots`, `public/intermediates`): the sign job verifies what it
 signed against them, and hubcheck checks release signatures against them.
 
 Repository variable `HUB_PIPELINE_ENABLED=true` switches the schedules on (check and sign do nothing on a schedule until it is set). The roots
 are never here: they are offline and sign only intermediates.
 
-Set up once: branch protection on `main` with the Actions bot allowed to push `signed/`, `verdicts/`, `certs/`, `revocations.json`, `requests/`
-(no other path, no force-push); CODEOWNERS on `.github/`, `scripts/`, `tools/`, `schema/`; "Require approval for all outside collaborators".
+Set up once: here, branch protection on `main` (pull request with a review, no force-push, no deletion; no bypass for any bot: no
+workflow writes here); CODEOWNERS on `.github/`, `scripts/`, `tools/`, `schema/`. On hub-log, a ruleset on `main` (no force-push, no
+deletion, changes only by push from the three deploy keys, which are its only bypass actors), Actions switched off, and
+`commit-log.sh` refuses any path but `signed/`, `verdicts/`, `certs/`, `revocations.json` and any checkout whose origin is not
+`wonderlandos/hub-log`.
 The workflows pin every third-party action by commit id; `tools/*.rev` pin the tools.
 
 ## Tooling contract (what the workflows call)
 
 Both tools are built from the commit in `tools/<name>.rev` by `scripts/tool.sh <name>` (a fresh clone at that commit, `cargo build --release
---locked`; the binary is cached in `~/.cache/hub-index-tools/<name>-<rev>/bin`, in actions/cache for `ci.yml` and the scan job, never for the
+--locked`; the binary is cached in `~/.cache/hub-pipeline-tools/<name>-<rev>/bin`, in actions/cache for `ci.yml` and the scan job, never for the
 jobs that hold secrets). There are no stand-ins: dry runs and `scripts/test.sh` run the same binaries with the TEST authority.
 
 `hubcheck` (HUB-wasm, `wonderlandos/hub` `wasm/`, `tools/hubcheck.rev` = `a0fcf58`; zstd plugins and extensions are read by default), called by `check-release.mjs`:

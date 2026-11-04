@@ -35,7 +35,7 @@ function makeGithub(fixturePath) {
       if (attempt) await new Promise((r) => setTimeout(r, 2000 * attempt));
       try {
         const res = await fetch(`${API}${path}`, {
-          headers: { accept: "application/vnd.github+json", "x-github-version": "2022-11-28", "user-agent": "wolos-hub-index", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+          headers: { accept: "application/vnd.github+json", "x-github-version": "2022-11-28", "user-agent": "wolos-hub-pipeline", ...(token ? { authorization: `Bearer ${token}` } : {}) },
           signal: AbortSignal.timeout(30_000),
         });
         if (res.status === 404) return null;

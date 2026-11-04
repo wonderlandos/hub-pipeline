@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/wonderlandos/hub-index/blob/main/schema/revoked.schema.json",
+  "$id": "https://github.com/wonderlandos/hub-log/blob/main/schema/revoked.schema.json",
   "title": "WolOS revocation list, format 1 (ADR 0046, woltrust revoked.rs)",
   "description": "The signed bytes of revoked.json. The woltrust reader refuses unknown keys, so this schema does too. Unix seconds. expires = issued + 7 days.",
   "type": "object",
