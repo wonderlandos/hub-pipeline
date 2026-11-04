@@ -1,26 +1,40 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-# ca: issue or revoke one author certificate from a request file under requests/ (ADR 0046). Manual only.
+# ca: issue or revoke one author certificate (ADR 0046).
 #
-# Environment "ca" must be set up with REQUIRED REVIEWERS (a second person approves every run, GitHub holds the run until
-# then) and "deployment branches: main". It holds (names only):
-#   secret  WOLOS_AUTHORS_CA_KEY   the Authors CA intermediate's key material, for woltrust
-#   var     AUTHORS_CA_SERIAL      serial of the Authors CA certificate (16 hex)
+# Issuing is automatic once an admin approves (lead rule): the admin presses Approve in the hub admin panel, the Worker
+# records approved_by/approved_at on the request and starts this workflow through the GitHub API
+# (POST /repos/wonderlandos/hub-index/actions/workflows/ca.yml/dispatches, inputs {request_id, dry_run: "false"}, with
+# the hub GitHub App's installation token, permission actions:write and nothing else on this repository). The job
+# fetches the request from the Worker with its OIDC token (GET /api/pipeline/requests/<id>), writes it to
+# requests/<id>.json, has woltrust check the proof and sign, commits certs/<serial>.wolcert and requests/done/<id>.json,
+# and tells the Worker the serial (POST /api/pipeline/certs). README, "How a certificate is issued".
+# A request file the CA operator committed (reviewed into main like any change) is issued with input `request`.
 #
-# dry_run (the default) uses a throw-away TEST CA (stand-in woltrust, test key): the certificate or revocation is made in a
-# scratch folder, shown in the log and kept as an artifact marked test; nothing in the repository changes.
-# A real run writes certs/<serial>.wolcert or appends to revocations.json, moves the request to requests/done/, commits,
-# and starts a real sign run so a revocation is published at once.
+# Environment "ca": deployment branch main only. No required reviewers: the second person is the admin whose
+# approval is in the request (approved_by), and only logins in the variable CA_APPROVERS count. It holds (names only):
+#   secret  WOLOS_AUTHORS_CA_KEY   the Authors CA intermediate's key material (plain or a locked .wolkey)
+#   secret  WOLOS_KEY_PASSPHRASE   the passphrase of a locked .wolkey (woltrust --passphrase-env)
+#   var     AUTHORS_CA_SERIAL      serial of the Authors CA certificate (16 hex; its .wolcert is in certs/intermediates/)
+#   var     CA_APPROVERS           GitHub logins of the hub admins who may approve, comma separated
+#
+# dry_run (the default of a manual run) issues with the TEST Authors CA of woltrust (scripts/test-keys.mjs, real
+# woltrust, a key derived from a public name) in a scratch folder: shown in the log, kept as an artifact marked test;
+# nothing in the repository or the Worker changes.
 name: ca
 
 on:
   workflow_dispatch:
     inputs:
       request:
-        description: "Request file, e.g. requests/alice-2026-11.json"
+        description: "Request file under requests/ (e.g. requests/alice-2026-11.json); or give request_id"
         type: string
-        required: true
+        required: false
+      request_id:
+        description: "Id of a request approved in the hub admin panel (the Worker sends it)"
+        type: string
+        required: false
       dry_run:
-        description: "Dry run with the test CA (default)"
+        description: "Dry run with the TEST CA (default)"
         type: boolean
         default: true
 
@@ -33,58 +47,75 @@ permissions: {}
 jobs:
   ca:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     environment: ca
     permissions:
-      contents: write   # certs/, revocations.json, requests/done/
+      contents: write   # certs/, revocations.json, requests/, requests/done/
       actions: write    # to start sign.yml after a revocation
+      id-token: write   # the Worker's approved request, and telling it the serial
     env:
       REQUEST: ${{ inputs.request }}
+      REQUEST_ID: ${{ inputs.request_id }}
       DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+      CA_APPROVERS: ${{ vars.CA_APPROVERS }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Check the request
+      - name: Get the request
         run: |
-          # The input is data, never code: it reaches the shell only through the environment.
+          # The inputs are data, never code: they reach the shell only through the environment.
+          if [ -n "$REQUEST_ID" ]; then
+            [ -z "$REQUEST" ] || { echo "give request or request_id, not both"; exit 1; }
+            [[ "$REQUEST_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] || { echo "not a request id"; exit 1; }
+            # Handled already (a second dispatch): nothing to do twice.
+            if [ -e "requests/done/$REQUEST_ID.json" ]; then echo "request $REQUEST_ID was handled already"; exit 1; fi
+            node scripts/api.mjs request --id "$REQUEST_ID" --out "requests/$REQUEST_ID.json"
+            REQUEST=requests/$REQUEST_ID.json
+            echo "REQUEST=$REQUEST" >> "$GITHUB_ENV"
+          fi
           [[ "$REQUEST" =~ ^requests/[A-Za-z0-9._-]+\.json$ ]] || { echo "the request must be a file directly under requests/"; exit 1; }
           if [ ! -f "$REQUEST" ] || [ -L "$REQUEST" ]; then echo "$REQUEST is not a plain file"; exit 1; fi
           node scripts/validate.mjs request "$REQUEST"
-          echo "ACTION=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.REQUEST)).action')" >> "$GITHUB_ENV"
+          action=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.REQUEST)).action')
+          if [ -n "$REQUEST_ID" ] && [ "$action" != issue ]; then echo "the Worker sends issue requests only"; exit 1; fi
+          echo "ACTION=$action" >> "$GITHUB_ENV"
 
-      - name: Build woltrust (pinned)
-        if: env.DRY_RUN != '1'
+      - name: Build woltrust (pinned, from source)
         id: woltrust
-        run: |
-          # TODO(ADR 0046): tools/woltrust.rev is "unpinned" until the woltrust crate has its command line; a real run stops here.
-          echo "bin=$(scripts/tool.sh woltrust)" >> "$GITHUB_OUTPUT"
+        run: echo "bin=$(scripts/tool.sh woltrust | tail -n 1)" >> "$GITHUB_OUTPUT"
 
-      - name: Dry run with the test CA
+      - name: Dry run with the TEST CA
         if: env.DRY_RUN == '1'
+        env:
+          WOLTRUST: ${{ steps.woltrust.outputs.bin }}
         run: |
           work="$RUNNER_TEMP/ca-dry"
-          mkdir -p "$work"
+          mkdir -p "$work/certs" "$work/keys"
           cp revocations.json "$work/revocations.json" 2>/dev/null || echo '{"format":1,"entries":[]}' > "$work/revocations.json"
-          mkdir -p "$work/certs"
           cp certs/*.wolcert "$work/certs/" 2>/dev/null || true
           if [ "$ACTION" = issue ]; then
-            node scripts/ca.mjs issue --request "$REQUEST" --certs "$work/certs" --issuer-serial 7e57ca0000000001 \
-              --source "$work/revocations.json" --woltrust "node scripts/woltrust-stub.mjs"
+            node scripts/test-keys.mjs "$work/keys"
+            approvers=(); [ -z "$CA_APPROVERS" ] || approvers=(--approvers "$CA_APPROVERS")
+            node scripts/ca.mjs issue --request "$REQUEST" --certs "$work/certs" --issuer-serial "$(cat "$work/keys/authors.serial")" \
+              --key-file "$work/keys/authors.key" --intermediates fixtures/trust/intermediates --source "$work/revocations.json" "${approvers[@]}"
+            rm -rf "$work/keys"
           else
             node scripts/ca.mjs revoke --request "$REQUEST" --certs "$work/certs" --source "$work/revocations.json"
           fi
-          echo "TEST ONLY: nothing was written to the repository" >> "$work/TEST-ONLY.txt"
+          echo "TEST ONLY: issued by the TEST Authors CA; nothing was written to the repository or the Worker" >> "$work/TEST-ONLY.txt"
 
       - name: Issue or revoke
         if: env.DRY_RUN != '1'
         env:
           WOLOS_AUTHORS_CA_KEY: ${{ secrets.WOLOS_AUTHORS_CA_KEY }}
+          WOLOS_KEY_PASSPHRASE: ${{ secrets.WOLOS_KEY_PASSPHRASE }}
           CA_SERIAL: ${{ vars.AUTHORS_CA_SERIAL }}
           WOLTRUST: ${{ steps.woltrust.outputs.bin }}
         run: |
           if [ "$ACTION" = issue ]; then
             node scripts/ca.mjs issue --request "$REQUEST" --certs certs --issuer-serial "${CA_SERIAL:?AUTHORS_CA_SERIAL is not set}" \
-              --source revocations.json --key-env WOLOS_AUTHORS_CA_KEY --archive
+              --intermediates certs/intermediates --source revocations.json --approvers "$CA_APPROVERS" \
+              --key-env WOLOS_AUTHORS_CA_KEY --passphrase-env WOLOS_KEY_PASSPHRASE --result "$RUNNER_TEMP/issued.json" --archive
           else
             node scripts/ca.mjs revoke --request "$REQUEST" --certs certs --source revocations.json --archive
           fi
@@ -93,6 +124,10 @@ jobs:
         if: env.DRY_RUN != '1'
         run: |
           scripts/commit-log.sh "ca: $ACTION $(basename "$REQUEST" .json)" certs revocations.json requests
+
+      - name: Tell the Worker the serial
+        if: env.DRY_RUN != '1' && env.ACTION == 'issue' && env.REQUEST_ID != ''
+        run: node scripts/api.mjs issued --in "$RUNNER_TEMP/issued.json"
 
       - name: Publish a revocation now
         if: env.DRY_RUN != '1' && env.ACTION == 'revoke'

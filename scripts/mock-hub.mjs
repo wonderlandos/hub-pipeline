@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // A stand-in for the hub Worker's pipeline endpoints, for local dry runs only (127.0.0.1).
 // It keeps the Worker's separation of duties: the "check" token reads pending and posts verdicts,
-// the "sign" token exports, and neither may do the other's job. It checks the shape of a verdict
+// the "sign" token exports, the "ca" token reads approved requests and reports certificates, and none may do
+// another's job. It checks the shape of a verdict
 // like the Worker does (pipeline.ts). Real OIDC checking is the Worker's and is NOT done here.
 //
-//   mock-hub.mjs --port 8787 --pending f --export f --received f
+//   mock-hub.mjs --port 8787 --pending f --export f --received f [--requests dir]
+//   (--requests: <dir>/<id>.json are the approved requests; POST /api/pipeline/certs lines go to --received too)
 import { createServer } from "node:http";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { parseArgs } from "./lib.mjs";
 
 const { opts } = parseArgs(process.argv.slice(2));
@@ -24,7 +27,7 @@ const send = (res, code, body) => {
 const deny = (res, code, error, sentence) => send(res, code, { error, sentence });
 
 createServer((req, res) => {
-  const who = { "Bearer check-token": "check", "Bearer sign-token": "sign" }[req.headers.authorization ?? ""];
+  const who = { "Bearer check-token": "check", "Bearer sign-token": "sign", "Bearer ca-token": "ca" }[req.headers.authorization ?? ""];
   if (!who) return deny(res, 401, "pipeline-token", "The pipeline token was refused: not a token.");
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
@@ -32,6 +35,24 @@ createServer((req, res) => {
     const url = req.url;
     if (req.method === "GET" && url === "/api/pipeline/pending") return who === "check" ? send(res, 200, pending) : deny(res, 401, "pipeline-token", "The pipeline token was refused: wrong workflow.");
     if (req.method === "GET" && url === "/api/pipeline/export") return who === "sign" ? send(res, 200, exported) : deny(res, 401, "pipeline-token", "The pipeline token was refused: wrong workflow.");
+    const rq = /^\/api\/pipeline\/requests\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})$/.exec(url);
+    if (req.method === "GET" && rq) {
+      if (who !== "ca") return deny(res, 401, "pipeline-token", "The pipeline token was refused: wrong workflow.");
+      const f = opts.requests && join(opts.requests, `${rq[1]}.json`);
+      return f && existsSync(f) ? send(res, 200, readFileSync(f, "utf8")) : deny(res, 404, "no-request", "There is no approved request with this id.");
+    }
+    if (req.method === "POST" && url === "/api/pipeline/certs") {
+      if (who !== "ca") return deny(res, 401, "pipeline-token", "The pipeline token was refused: wrong workflow.");
+      let b;
+      try {
+        b = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        return deny(res, 400, "bad-json", "Send a JSON body.");
+      }
+      if (!/^[0-9a-f]{16}$/.test(b.serial ?? "") || typeof b.cert !== "string" || typeof b.request_id !== "string") return deny(res, 400, "bad-cert", "Send request_id, serial and cert.");
+      appendFileSync(opts.received, JSON.stringify({ issued: b.request_id, serial: b.serial }) + "\n");
+      return send(res, 200, { stored: true });
+    }
     if (req.method === "POST" && url === "/api/pipeline/verdicts") {
       if (who !== "check") return deny(res, 401, "pipeline-token", "The pipeline token was refused: wrong workflow.");
       let b;

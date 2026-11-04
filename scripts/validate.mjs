@@ -111,6 +111,10 @@ export function checkRequest(req) {
     const login = req.subject.login.toLowerCase();
     if (req.namespaces.some((n) => n.startsWith("org.wolos") || n === "org.")) errors.push("org.wolos. belongs to the Packages CA only");
     if (req.kind === "person" && !req.namespaces.includes(`${login}.`)) errors.push(`a person's namespaces include "${login}."`);
+    if (Boolean(req.keys.x25519) !== Boolean(req.keys["ml-kem-768"])) errors.push("keys: x25519 and ml-kem-768 come both or not at all");
+    if (req.subject.org && req.kind !== "person") errors.push("subject.org: only a person names an organisation");
+    if (req.approved_by.some((a) => a.toLowerCase() === login)) errors.push("approved_by: nobody approves their own certificate");
+    if (req.approved_at < req.requested_at) errors.push("approved_at is before requested_at");
   }
   return errors;
 }

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-# ci: every script and fixture of this repository, with no secret and no network.
+# ci: every script and fixture of this repository with the real pinned woltrust and hubcheck; no secret, no network
+# but the tool build.
 name: ci
 
 on:
@@ -14,9 +15,13 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/hub-index-tools
+          key: ci-tools-${{ hashFiles('tools/woltrust.rev', 'tools/hubcheck.rev', 'scripts/tool.sh') }}
       - run: scripts/test.sh
