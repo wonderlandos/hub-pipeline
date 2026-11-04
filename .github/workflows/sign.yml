@@ -12,6 +12,9 @@
 #                             emergency` and committed to hub-log by hand): copied to the CDN and carried inside revoked.rkdb
 #   release.json.wsig         when a release manifest URL is given (input release_manifest): the Index's signature over it,
 #                             uploaded to latest/release.json.wsig beside the manifest
+#   pictures/<sha256>.<ext>   the icons and screenshots the export's listings name, from log/pictures/ (check.yml's
+#                             report job wrote them there from hubcheck extract), checked again by hash, size and header,
+#                             uploaded to plugins/pictures/ (the Worker's picture `file` name)
 # All of it is mirrored to log/signed/ (and the checkpoint to log/revoked.checkpoint.json).
 #
 # This repository (wonderlandos/hub-pipeline, private) holds the code; the job reads and writes the log in a second
@@ -133,6 +136,7 @@ jobs:
             --intermediates log/certs/intermediates --certs log/certs --revocations log/revocations.json --out work/out/index.json "${extra[@]}"
           node scripts/validate.mjs index work/out/index.json --revoked work/out/revoked.json
           node scripts/validate.mjs revoked work/out/revoked.json
+          node scripts/pictures.mjs stage --export work/export.checked.json --from log/pictures --out work/out/pictures
 
       - name: Does anything need publishing
         id: need

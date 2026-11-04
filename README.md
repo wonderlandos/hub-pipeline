@@ -41,6 +41,7 @@ signed/                     the last publication: index.json, index.json.sig, in
                             (git history of this folder = every index ever signed, append-only; commits come from the sign workflow)
 revoked.checkpoint.json     the checkpoint again at the root: crates/core/src/cdn.rs RKDB_CHECKPOINTS reads it there and on the CDN
 verdicts/<id>/<version>.json   one check verdict per release (verdict, findings, sha256, size, run, workflow sha)
+pictures/<sha256>.<png|webp>   the icons and screenshots hubcheck extract found in passed packages (re-checked by hash, size and header; sign.yml puts them on the CDN as plugins/pictures/)
 certs/<serial>.wolcert      every author certificate the Authors CA issued; certs/<serial>.json its record (tier, request_id, ...)
 certs/roots/                the public root certificates (the ones the image pins), for hubcheck and the sign job's self-check
 certs/intermediates/        intermediate certificates to carry in index.json (newer than the image's trust store)
@@ -75,7 +76,7 @@ Clients read the CDN, not a repository: `https://cdn.wolos.org/plugins/{index.js
   (`GET /api/pipeline/requests/v-...`, schema `id`, `note`), appends it, and reports `POST /api/pipeline/revocations
   {request_id, serial}` (`api.mjs revoked`). Issue requests for trusted carry `origin_cert`, checked against the subject's active
   origin certificate.
-- hubcheck stays at `a0fcf58` (the newest `wasm/` commit of `wonderlandos/hub`, built on woltrust `0b00c1e`): it does not read
+- hubcheck is at `f2bce73` (the newest `wasm/` commit of `wonderlandos/hub`, built on woltrust `0b00c1e`; `a0fcf58` before it blocked `screenshots/` members and had no listing facts): it does not read
   128-hex ids or two-root intermediates, so files signed under the real roots come out `community` until hub bumps woltrust.
 
 ## How a release gets listed
@@ -252,12 +253,22 @@ Both tools are built from the commit in `tools/<name>.rev` by `scripts/tool.sh <
 --locked`; the binary is cached in `~/.cache/hub-pipeline-tools/<name>-<rev>/bin`, in actions/cache for `ci.yml` and the scan job, never for the
 jobs that hold secrets). There are no stand-ins: dry runs and `scripts/test.sh` run the same binaries with the TEST authority.
 
-`hubcheck` (HUB-wasm, `wonderlandos/hub` `wasm/`, `tools/hubcheck.rev` = `a0fcf58`, `tools/hubcheck.sha256` the binary built here; zstd plugins and extensions are read by default), called by `check-release.mjs`:
+`hubcheck` (HUB-wasm, `wonderlandos/hub` `wasm/`, `tools/hubcheck.rev` = `f2bce73`, `tools/hubcheck.sha256` the binary built here; zstd plugins and extensions are read by default), called by `check-release.mjs`:
 `hubcheck inspect app|plugin|extension FILE --store store.json --now UNIX [--first-seen UNIX]` prints one line of I7 JSON,
-`{"verdict":"pass|flag|block|not-checked","findings":[{"rule","sentence","evidence"}],"trust":"wolos|verified|community|withdrawn|invalid","cert"?:{"serial","subject","level"},"origin"?,"file"?:{"id","version"?}}`,
+`{"verdict":"pass|flag|block|not-checked","findings":[{"rule","sentence","evidence"}],"trust":"wolos|trusted|origin|verified|community|withdrawn|invalid","cert"?:{"serial","subject","level"},"origin"?,"file"?:{"id","version"?},"facts"?:{"name","summary","description"?,"icon"?,"screenshots","categories","homepage"?,"licence"?}}`,
 exit 0 whenever it printed a report. The verdict is hubcheck's; `check-release.mjs` adds only what hubcheck cannot know (download, the size
 GitHub listed, the 120-second limit, and a block when `file.id` or `file.version` is not the listing's) and turns anything else (no binary, no store, a non-zero exit, output that is not a report, a timeout)
 into `not-checked`. `store.json` is `scripts/store.mjs` (`{"roots":[...],"intermediates":[...],"allow_test":false,"revoked":[{"list","wsig"}]}`).
+
+Listing facts and pictures (the store page's name, summary, description, icon and screenshots come from the package, never from a form):
+for a `pass` or `flag`, `check-release.mjs --pictures DIR` keeps hubcheck's `facts` in the shape of the Worker's `metaOf`
+(`scripts/facts.mjs`: name 80, summary 200 on one line, description 4000, icon and at most 8 screenshots as `{path, mime, w, h, size, sha256}`;
+a field the Worker would refuse is left out, not the verdict) and runs `hubcheck extract FILE --out SCRATCH --kind KIND`, which writes the pictures as
+`<sha256>.<png|webp>`. A picture reference stays in the verdict only when those exact bytes (hash, size, type, pixel size) are there; the `scan` job uploads
+them as artifact `pictures`. The `report` job (`verdicts.mjs clean --pictures --pictures-out log/pictures`) re-checks each one and commits it to
+hub-log `pictures/<sha256>.<ext>`. The `sign` job (`pictures.mjs stage`) takes the pictures the Worker's export names (`icon.file`, `screenshots[].file`)
+from there, checks them again, and `publish.sh` uploads them first of all to `https://cdn.wolos.org/plugins/pictures/<sha256>.<ext>`. A file that is not
+a listed picture name is refused; a picture that is missing or changed is left out and named in the log. No image ever goes through the Worker.
 
 `woltrust` (the woltrust crate of wolos, `src/bin/woltrust.rs`, `tools/woltrust.rev` = `68b5a03`, `tools/woltrust.sha256`, branch `wave3/trust-core`):
 - `woltrust sign --purpose index|revocation --cert SERIAL --key-env NAME --passphrase-env WOLOS_KEY_PASSPHRASE FILE` prints the `.wsig`

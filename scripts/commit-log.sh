@@ -10,7 +10,7 @@
 #                deploy key, secret HUB_LOG_DEPLOY_KEY)
 # HUB_LOG_REPO   default wonderlandos/hub-log; the checkout's origin must be exactly this repository on github.com
 #
-# Only the published folders may be committed: signed/, verdicts/, certs/, revocations.json and revoked.checkpoint.json
+# Only the published folders may be committed: signed/, verdicts/, pictures/, certs/, revocations.json and revoked.checkpoint.json
 # (the database checkpoint at the root, where WolOS reads it: crates/core/src/cdn.rs RKDB_CHECKPOINTS). Any other path is
 # refused, so a mistake in the pipeline cannot change hub-log's README or schema/.
 set -euo pipefail
@@ -21,8 +21,8 @@ dir=${HUB_LOG_DIR:-log}
 repo=${HUB_LOG_REPO:-wonderlandos/hub-log}
 for p in "$@"; do
     case $p in
-    signed | signed/* | verdicts | verdicts/* | certs | certs/* | revocations.json | revoked.checkpoint.json) ;;
-    *) echo "log: $p is not a published path of hub-log (signed/ verdicts/ certs/ revocations.json revoked.checkpoint.json)" >&2; exit 1 ;;
+    signed | signed/* | verdicts | verdicts/* | pictures | pictures/* | certs | certs/* | revocations.json | revoked.checkpoint.json) ;;
+    *) echo "log: $p is not a published path of hub-log (signed/ verdicts/ pictures/ certs/ revocations.json revoked.checkpoint.json)" >&2; exit 1 ;;
     esac
     case $p in *..*) echo "log: $p: no .. in a log path" >&2; exit 1 ;; esac
 done

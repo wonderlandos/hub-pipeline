@@ -6,8 +6,11 @@
 #
 # Three jobs, so the one that opens untrusted files has no token to lose:
 #   fetch   asks the Worker what is pending                        (OIDC token)
-#   scan    downloads each release file, checks size and sha256, runs hubcheck   (NO token, no write right)
-#   report  posts the verdicts and commits them to hub-log verdicts/   (OIDC token, HUB_LOG_DEPLOY_KEY; reads only the scan's JSON, validated)
+#   scan    downloads each release file, checks size and sha256, runs hubcheck; for a pass or flag, hubcheck extract
+#           writes the listing's icon and screenshots as <sha256>.<png|webp>   (NO token, no write right)
+#   report  posts the verdicts (with the listing facts) and commits them to hub-log verdicts/ and the pictures they name
+#           to hub-log pictures/ (OIDC token, HUB_LOG_DEPLOY_KEY; reads only the scan's JSON and pictures, each checked
+#           against its sha256, size and header); sign.yml puts those pictures on the CDN as plugins/pictures/
 #
 # This repository (wonderlandos/hub-pipeline, private) holds the code. The public log, wonderlandos/hub-log, is a second
 # checkout at log/: scan reads the trust store from it without any credential (it is public), report pushes verdicts/ to
@@ -97,11 +100,17 @@ jobs:
         env:
           HUBCHECK_BIN: ${{ steps.tool.outputs.bin }}
           HUBCHECK_STORE: ${{ runner.temp }}/store.json
-        run: node scripts/check-release.mjs --pending pending.json --out verdicts.json
+        run: node scripts/check-release.mjs --pending pending.json --out verdicts.json --pictures pictures
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: verdicts
           path: verdicts.json
+          retention-days: 3
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pictures
+          path: pictures
+          if-no-files-found: ignore
           retention-days: 3
 
   report:
@@ -129,8 +138,13 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: verdicts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        continue-on-error: true   # no listing in this run had a picture: the scan uploaded none
+        with:
+          name: pictures
+          path: pictures
       - name: Keep only what the Worker takes, only for pending releases
-        run: node scripts/verdicts.mjs clean --pending pending.json --verdicts verdicts.json --out clean.json
+        run: mkdir -p pictures && node scripts/verdicts.mjs clean --pending pending.json --verdicts verdicts.json --out clean.json --pictures pictures --pictures-out log/pictures
       - name: Post the verdicts
         run: node scripts/api.mjs verdicts --in clean.json
       - name: Write them to the public log
@@ -139,4 +153,4 @@ jobs:
           SHA: ${{ github.workflow_sha }}
         run: |
           node scripts/verdicts.mjs log --verdicts clean.json --dir log/verdicts --run "$RUN" --workflow-sha "$SHA"
-          scripts/commit-log.sh "verdicts: run $RUN" verdicts
+          scripts/commit-log.sh "verdicts: run $RUN" verdicts pictures

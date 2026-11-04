@@ -4,7 +4,11 @@
 // sha256, run the native hubcheck on it and write one verdict. This is the only place an untrusted
 // file is opened, and the job that runs it holds no token and no secret.
 //
-//   check-release.mjs --pending pending.json --out verdicts.json [--work dir]
+//   check-release.mjs --pending pending.json --out verdicts.json [--work dir] [--pictures dir]
+//
+// --pictures dir: for every pass or flag, `hubcheck extract` writes the package's icon and screenshots there as
+// <sha256>.<png|webp> (the name the Worker's listings carry as `file`); the verdict's facts keep only the pictures
+// whose bytes are there and match. Without it the verdict carries the text facts and no picture.
 //
 // HUBCHECK_BIN    path of the native hubcheck (scripts/tool.sh hubcheck: wonderlandos/hub wasm/, tools/hubcheck.rev).
 //                 Missing = nothing is decided: every release gets "not-checked", never "pass".
@@ -19,7 +23,8 @@
 //   hubcheck inspect app|plugin|extension FILE --store store.json --now UNIX [--first-seen UNIX]
 //   stdout, one line: {"verdict":"pass|flag|block|not-checked","findings":[{"rule","sentence","evidence"}],
 //                      "trust":"wolos|verified|community|withdrawn|invalid","cert"?:{"serial",...},"origin"?:{...},
-//                      "file"?:{"id","version"?}}
+//                      "file"?:{"id","version"?},"facts"?:{name,summary,description?,icon?,screenshots,...}}
+//   hubcheck extract FILE --out DIR --kind KIND   writes the pictures of facts as DIR/<sha256>.<png|webp> (f2bce73+)
 //   exit 0 whenever a report was printed, 1 when the file could not be read, 2 for a wrong command line.
 // The verdict is hubcheck's: this script adds only what hubcheck cannot know (the download, the size GitHub listed, the
 // time limit, whether the file's id and version are the listing's: block when not) and turns every failure of the
@@ -28,6 +33,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { die, jsonText, parseArgs, readJson, sha256Hex, writeAtomic, isSerial } from "./lib.mjs";
+import { cleanFacts, keepPictures, pictureFile, pictureThere } from "./facts.mjs";
 import { readFileSync } from "node:fs";
 
 const MAX_ASSET = Number(process.env.MAX_ASSET ?? 1 << 30);
@@ -37,7 +43,8 @@ const ID = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._,+~-]{0,63}$/;
 const REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const SEGMENT = /^[A-Za-z0-9._+~%,-]{1,200}$/;
-const TRUST = ["wolos", "verified", "community", "withdrawn", "invalid"];
+// hub-worker src/pipeline.ts SIG_TRUST: hubcheck f2bce73+ says trusted or origin from the certificate class, an older one verified.
+export const TRUST = ["wolos", "trusted", "origin", "verified", "community", "withdrawn", "invalid"];
 const CONTROL = /[\u0000-\u001f\u007f]/g;
 
 const finding = (rule, sentence, evidence = "") => ({ rule, sentence, evidence });
@@ -78,6 +85,9 @@ export function cleanOutput(text) {
   if (isSerial(o.cert?.serial)) out.cert = o.cert.serial;
   // What the file says it is (hubcheck a0fcf58+: Info.json / plugin.toml / extension.toml); checked against the listing below.
   if (o.file && typeof o.file.id === "string") out.file = { id: o.file.id, ...(typeof o.file.version === "string" ? { version: o.file.version } : {}) };
+  // The listing read from the package (hubcheck f2bce73+), in the shape the Worker's metaOf takes.
+  const facts = cleanFacts(o.facts);
+  if (facts) out.facts = facts;
   return out;
 }
 
@@ -113,7 +123,23 @@ function runHubcheck(bin, store, r, file, work) {
   return { out: cleanOutput(p.stdout) };
 }
 
-export function checkOne(r, { work, hubcheck, store, assetsDir }) {
+/** hubcheck extract into a scratch folder; only pictures that match their reference move on to dir. */
+function extractPictures(bin, r, file, work, facts, dir) {
+  const scratch = join(work, "extract");
+  rmSync(scratch, { recursive: true, force: true });
+  mkdirSync(scratch, { recursive: true });
+  const p = spawnSync(bin, ["extract", resolve(file), "--out", scratch, "--kind", r.kind], { cwd: work, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: HUBCHECK_SECS * 1000, maxBuffer: 2 << 20 });
+  if (!p.error && p.status === 0) {
+    mkdirSync(dir, { recursive: true });
+    for (const pic of [facts.icon, ...(facts.screenshots ?? [])]) {
+      if (pic && pictureThere(scratch, pic)) copyFileSync(join(scratch, pictureFile(pic)), join(dir, pictureFile(pic)));
+    }
+  }
+  rmSync(scratch, { recursive: true, force: true });
+  return keepPictures(facts, existsSync(dir) ? dir : undefined);
+}
+
+export function checkOne(r, { work, hubcheck, store, assetsDir, pictures }) {
   const v = (verdict, findings, extra = {}) => ({ listing_id: r.listing_id, version: r.version, verdict, ...extra, findings });
   if (r.size != null && r.size > MAX_ASSET) {
     return v("not-checked", [finding("size/too-large", `The file is larger than the ${MAX_ASSET >> 20} MiB the hub checks, so it was not checked.`)]);
@@ -148,12 +174,18 @@ export function checkOne(r, { work, hubcheck, store, assetsDir }) {
     verdict = "block";
     findings = [finding("listing/version-mismatch", "The version inside the file is not the version of this release.", `file ${said.version}, release ${r.version}`), ...findings];
   }
-  return v(verdict, findings.slice(0, 200), { sha256, size, ...(trust ? { trust } : {}), ...(cert ? { cert } : {}) });
+  // The listing's facts only from a file that is listed (pass or flag); pictures only when extract wrote them.
+  let facts;
+  if ((verdict === "pass" || verdict === "flag") && res.out.facts) {
+    const pics = res.out.facts.icon || res.out.facts.screenshots;
+    facts = pics && pictures ? extractPictures(hubcheck, r, file, work, res.out.facts, pictures) : keepPictures(res.out.facts, undefined);
+  }
+  return v(verdict, findings.slice(0, 200), { sha256, size, ...(trust ? { trust } : {}), ...(cert ? { cert } : {}), ...(facts ? { facts } : {}) });
 }
 
 function main() {
   const { opts } = parseArgs(process.argv.slice(2));
-  if (!opts.pending || !opts.out) die("usage: check-release.mjs --pending pending.json --out verdicts.json [--work dir] [--assets-dir dir]", 2);
+  if (!opts.pending || !opts.out) die("usage: check-release.mjs --pending pending.json --out verdicts.json [--work dir] [--assets-dir dir] [--pictures dir]", 2);
   const work = opts.work ?? join(process.env.RUNNER_TEMP ?? "/tmp", `hub-check-${process.pid}`);
   mkdirSync(work, { recursive: true });
   const { releases } = readJson(opts.pending);
@@ -167,7 +199,7 @@ function main() {
       process.stderr.write(`skipped a pending row: ${bad} is not valid\n`);
       continue;
     }
-    const v = checkOne(r, { work, hubcheck, store, assetsDir: opts["assets-dir"] });
+    const v = checkOne(r, { work, hubcheck, store, assetsDir: opts["assets-dir"], pictures: opts.pictures ? resolve(opts.pictures) : undefined });
     process.stdout.write(`${r.listing_id} ${r.version}: ${v.verdict}${v.findings.length ? ` (${v.findings.map((f) => f.rule).join(", ")})` : ""}\n`);
     verdicts.push(v);
   }

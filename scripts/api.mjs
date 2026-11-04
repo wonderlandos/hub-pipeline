@@ -20,7 +20,22 @@ import { readJson, writeAtomic, jsonText, parseArgs, die, isSerial } from "./lib
 const AUDIENCE = process.env.HUB_AUDIENCE ?? "hub.wolos.org";
 const BASE = (process.env.HUB_API ?? "https://hub.wolos.org").replace(/\/+$/, "");
 const MAX_BODY = 8 << 20;
-const BATCH = 50; // the Worker takes 1..100 and 256 KiB per call
+const BATCH = 100; // the Worker takes 1..100 verdicts and 256 KiB (LIMITS.verdicts) per call
+const BATCH_BYTES = 200 * 1024; // listing facts make a verdict up to ~10 KiB: split by size too, with room for the envelope
+
+/** Verdicts cut into calls of at most BATCH entries and BATCH_BYTES of JSON each (one verdict always goes, however big). */
+export function batches(verdicts, maxCount = BATCH, maxBytes = BATCH_BYTES) {
+  const out = [];
+  let cur = [], bytes = 0;
+  for (const v of verdicts) {
+    const n = Buffer.byteLength(JSON.stringify(v)) + 1;
+    if (cur.length && (cur.length >= maxCount || bytes + n > maxBytes)) { out.push(cur); cur = []; bytes = 0; }
+    cur.push(v);
+    bytes += n;
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/; // schema/request.schema.json, id
 
 export function checkBase(base, test) {
@@ -92,8 +107,8 @@ async function main() {
     const { verdicts } = readJson(opts.in);
     if (!Array.isArray(verdicts)) throw new Error(`${opts.in}: no verdicts list`);
     const results = [];
-    for (let i = 0; i < verdicts.length; i += BATCH) {
-      const r = await call("POST", "/api/pipeline/verdicts", { verdicts: verdicts.slice(i, i + BATCH) });
+    for (const batch of batches(verdicts)) {
+      const r = await call("POST", "/api/pipeline/verdicts", { verdicts: batch });
       results.push(...r.results);
     }
     for (const r of results) process.stdout.write(`${r.listing_id} ${r.version}: ${r.stored}\n`);

@@ -4,7 +4,9 @@
 #
 #   publish.sh <dir>        <dir>: index.json index.json.sig index.json.wsig revoked.json revoked.json.wsig
 #                           revoked.rkdb revoked.checkpoint.json intermediates.json [emergency.rkdr] [release.json.wsig]
-#                           [statements/<id>/<version>.wsig]
+#                           [statements/<id>/<version>.wsig] [pictures/<sha256>.<png|webp>]
+#                           pictures/ (scripts/pictures.mjs stage: the listings' icons and screenshots, read from the
+#                           packages by hubcheck extract) go to plugins/pictures/<sha256>.<png|webp>, first of all.
 #                           Everything goes to plugins/<name> (crates/core/src/trust.rs: RKDB_PATH, EMERGENCY_PATH,
 #                           INTERMEDIATES_PATH; cdn.rs RKDB_CHECKPOINTS), except release.json.wsig, which goes to
 #                           latest/release.json.wsig, beside the release manifest it signs (cdn.rs LATEST).
@@ -34,6 +36,15 @@ target() { case $1 in release.json.wsig) echo "latest/$1" ;; *) echo "plugins/$1
 if [ -d "$dir/statements" ]; then
     mapfile -t statements < <(cd "$dir" && find statements -name '*.wsig' | LC_ALL=C sort)
     files=("${statements[@]}" "${files[@]}")
+fi
+# The pictures the listings name, before everything: a page that shows the new index finds them there. Only names
+# of the form <64 hex>.png|webp (what pictures.mjs stages); anything else in the folder is refused.
+if [ -d "$dir/pictures" ]; then
+    mapfile -t pictures < <(cd "$dir" && find pictures -type f | LC_ALL=C sort)
+    for f in "${pictures[@]}"; do
+        [[ $f =~ ^pictures/[0-9a-f]{64}\.(png|webp)$ ]] || { echo "publish: $dir/$f is not a picture name (<sha256>.png|webp)" >&2; exit 1; }
+    done
+    files=("${pictures[@]}" "${files[@]}")
 fi
 
 if [ "${DRY_RUN:-0}" = 1 ]; then
