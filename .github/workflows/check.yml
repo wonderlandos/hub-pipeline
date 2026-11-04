@@ -7,7 +7,11 @@
 # Three jobs, so the one that opens untrusted files has no token to lose:
 #   fetch   asks the Worker what is pending                        (OIDC token)
 #   scan    downloads each release file, checks size and sha256, runs hubcheck   (NO token, no write right)
-#   report  posts the verdicts and commits them to verdicts/       (OIDC token; reads only the scan's JSON, validated)
+#   report  posts the verdicts and commits them to hub-log verdicts/   (OIDC token, HUB_LOG_DEPLOY_KEY; reads only the scan's JSON, validated)
+#
+# This repository (wonderlandos/hub-pipeline, private) holds the code. The public log, wonderlandos/hub-log, is a second
+# checkout at log/: scan reads the trust store from it without any credential (it is public), report pushes verdicts/ to
+# it with the check environment's deploy key (secret HUB_LOG_DEPLOY_KEY). No job of this workflow can write here.
 name: check
 
 on:
@@ -17,7 +21,7 @@ on:
 
 # A run that is still going is never cut short, and a new one waits: two reports of the same release help nobody.
 concurrency:
-  group: hub-index-check
+  group: hub-pipeline-check
   cancel-in-progress: false
 
 permissions: {}
@@ -62,6 +66,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Check out the public log (read only)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: wonderlandos/hub-log
+          ref: main
+          path: log
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: pending
@@ -70,7 +81,7 @@ jobs:
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: cache
         with:
-          path: ~/.cache/hub-index-tools
+          path: ~/.cache/hub-pipeline-tools
           key: scan-hubcheck-${{ hashFiles('tools/hubcheck.rev', 'scripts/tool.sh') }}
       - name: Build the pinned hubcheck
         id: tool
@@ -78,10 +89,10 @@ jobs:
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: steps.cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.cache/hub-index-tools
+          path: ~/.cache/hub-pipeline-tools
           key: scan-hubcheck-${{ hashFiles('tools/hubcheck.rev', 'scripts/tool.sh') }}
       - name: The trust store (pinned roots, intermediates, the last signed revocation list)
-        run: node scripts/store.mjs --roots certs/roots --intermediates certs/intermediates --list signed/revoked.json --out "$RUNNER_TEMP/store.json"
+        run: node scripts/store.mjs --roots log/certs/roots --intermediates log/certs/intermediates --list log/signed/revoked.json --out "$RUNNER_TEMP/store.json"
       - name: Fetch and check every pending release
         env:
           HUBCHECK_BIN: ${{ steps.tool.outputs.bin }}
@@ -99,10 +110,19 @@ jobs:
     timeout-minutes: 10
     environment: check
     permissions:
-      contents: write   # the public log: verdicts/<id>/<version>.json
+      contents: read    # this repository; verdicts go to hub-log with HUB_LOG_DEPLOY_KEY, not this token
       id-token: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check out the public log (wonderlandos/hub-log)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: wonderlandos/hub-log
+          ref: main
+          path: log
+          ssh-key: ${{ secrets.HUB_LOG_DEPLOY_KEY }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: pending
@@ -118,5 +138,5 @@ jobs:
           RUN: ${{ github.run_id }}.${{ github.run_attempt }}
           SHA: ${{ github.workflow_sha }}
         run: |
-          node scripts/verdicts.mjs log --verdicts clean.json --dir verdicts --run "$RUN" --workflow-sha "$SHA"
+          node scripts/verdicts.mjs log --verdicts clean.json --dir log/verdicts --run "$RUN" --workflow-sha "$SHA"
           scripts/commit-log.sh "verdicts: run $RUN" verdicts

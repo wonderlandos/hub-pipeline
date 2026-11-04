@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The unchanged 0.12 plugin index reader (wopkg::index::plugins::verify) against a hub-index sample. Copy to crates/wopkg/tests/ in a wolos checkout, run, delete (see README, "Checked against the 0.12 reader").
+// The unchanged 0.12 plugin index reader (wopkg::index::plugins::verify) against a hub-pipeline sample. Copy to crates/wopkg/tests/ in a wolos checkout, run, delete (see README, "Checked against the 0.12 reader").
 use std::{env, fs};
 #[test]
 fn hub_index_sample_parses_in_012() {

@@ -11,7 +11,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 fx=$root/fixtures
-work=$(mktemp -d "${TMPDIR:-/tmp}/hub-index-test.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/hub-pipeline-test.XXXXXX")
 mock_pid=
 cleanup() { [ -z "$mock_pid" ] || kill "$mock_pid" 2>/dev/null || true; rm -rf "$work"; }
 trap cleanup EXIT
@@ -330,6 +330,35 @@ rm -rf "$ca/c2"; mkdir -p "$ca/c2"
 WOLTRUST_FEATURES=class node "$here/ca.mjs" issue --github-fixture "$fx/github.json" --request "$ca/requests/done/r-0001.json" --certs "$ca/c2" --issuer-serial "$AUTHORS_SERIAL" --key-file "$keys/authors.key" --approvers carol-ca >"$work/class.log" 2>&1 || true; grep -q "origin certificate first" "$work/class.log" && ok "class: a trusted certificate needs the subject's origin certificate first" || bad "class order: $(cat "$work/class.log")"
 WOLTRUST_FEATURES=class node "$here/ca.mjs" issue --github-fixture "$fx/github.json" --request "$ca/requests/done/r-0002.json" --certs "$ca/c2" --issuer-serial "$AUTHORS_SERIAL" --key-file "$keys/authors.key" >"$work/class.log" 2>&1 || true; grep -q "woltrust issue failed" "$work/class.log" && ok "class: woltrust fe64176 refuses a body with class (why tools/woltrust.features leaves it out)" || bad "class body: $(cat "$work/class.log")"
 CA_MJS="$here/ca.mjs" REQ="$ca/requests/done/r-0001.json" node --input-type=module -e 'const m=await import(process.env.CA_MJS);const r=JSON.parse((await import("node:fs")).readFileSync(process.env.REQ));const b=m.certBody(r,{serial:"1".repeat(16),issuer:"2".repeat(16),now:1793750400,identity:{subject:{github_id:1001,login:"alice",name:"Alice Example"},namespaces:["alice."]},withClass:true,originCert:"3".repeat(16)});process.exit(b.class==="trusted"&&b.origin_cert==="3".repeat(16)?0:1)' && ok "class: a trusted body carries class and origin_cert" || bad "class fields"
+
+# 4b. commit-log.sh writes only the published paths, and only to wonderlandos/hub-log (a local bare repository stands in
+# for it through a url.insteadOf in a scratch git config; the checkout's origin stays the real URL).
+lg=$work/hub-log; mkdir -p "$lg"
+(
+    export GIT_CONFIG_GLOBAL=$lg/gitconfig GIT_CONFIG_NOSYSTEM=1
+    git config --global url."file://$lg/remote.git".insteadOf https://github.com/wonderlandos/hub-log.git
+    git config --global init.defaultBranch main
+    git init -q --bare "$lg/remote.git"
+    git init -q "$lg/seed" && cd "$lg/seed" && mkdir schema && echo '{}' >schema/x.json && echo log >README.md && git add . \
+        && git -c user.name=t -c user.email=t@t commit -q -m start && git push -q "file://$lg/remote.git" HEAD:main
+    git clone -q https://github.com/wonderlandos/hub-log.git "$lg/log"
+) && ok "a stand-in hub-log checked out under its real URL" || bad "hub-log stand-in"
+logrun() { (cd "$lg" && GIT_CONFIG_GLOBAL=$lg/gitconfig GIT_CONFIG_NOSYSTEM=1 HUB_LOG_DIR=log "$here/commit-log.sh" "$@"); }
+mkdir -p "$lg/log/verdicts/alice.notes" && echo '{"verdict":"pass"}' >"$lg/log/verdicts/alice.notes/1.0.json"
+logrun "verdicts: test" verdicts >"$work/log.out" 2>&1 && git --git-dir="$lg/remote.git" show main:verdicts/alice.notes/1.0.json >/dev/null 2>&1 \
+    && ok "commit-log.sh pushed verdicts/ to hub-log" || bad "commit-log push: $(cat "$work/log.out")"
+logrun "again" verdicts 2>&1 | grep -q "nothing to commit" && ok "nothing new = no commit" || bad "empty commit"
+echo changed >"$lg/log/README.md"
+expect_fail "commit-log.sh with a path that is not published (README.md)" logrun "x" README.md
+expect_fail "commit-log.sh with schema/" logrun "x" schema
+expect_fail "commit-log.sh with a .. path" logrun "x" "verdicts/../README.md"
+git -C "$lg/log" checkout -q -- README.md
+git -C "$lg/log" config remote.origin.url https://github.com/mallory/hub-log.git
+mkdir -p "$lg/log/certs" && echo '{}' >"$lg/log/certs/0000000000000001.json"
+expect_fail "commit-log.sh into a checkout of another repository" logrun "x" certs
+git -C "$lg/log" config remote.origin.url https://github.com/wonderlandos/hub-log.git
+logrun "ca: test" certs revocations.json >/dev/null 2>&1 && git --git-dir="$lg/remote.git" show main:certs/0000000000000001.json >/dev/null 2>&1 \
+    && ok "commit-log.sh pushed certs/ (revocations.json absent is fine)" || bad "commit-log certs"
 
 # 5. Optional: keep what was made as the sample (SAMPLE_OUT=fixtures/sample-signed scripts/test.sh).
 if [ -n "${SAMPLE_OUT:-}" ]; then

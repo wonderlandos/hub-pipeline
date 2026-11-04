@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Shared helpers of the hub-index scripts. No dependencies: Node 20 or later.
+// Shared helpers of the hub-pipeline scripts. No dependencies: Node 20 or later.
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, renameSync } from "node:fs";
 

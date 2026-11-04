@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/wonderlandos/hub-index/blob/main/schema/index.schema.json",
+  "$id": "https://github.com/wonderlandos/hub-log/blob/main/schema/index.schema.json",
   "title": "WolOS Hub index, format 1 (extended)",
   "description": "ADR 0047. Today's plugin index (format 1: format, serial, expires, plugins[]) keeps its fields and meaning; everything below is added. The 0.12 reader ignores unknown keys and drops an entry that breaks its own rules, so a hub index parses there unchanged. Times are Unix seconds. index.json.sig is the legacy Ed25519 signature over the same bytes, index.json.wsig the hybrid one (label wolos/index/1).",
   "type": "object",

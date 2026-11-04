@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/wonderlandos/hub-index/blob/main/schema/request.schema.json",
+  "$id": "https://github.com/wonderlandos/hub-log/blob/main/schema/request.schema.json",
   "title": "Certificate request file (requests/<name>.json) read by the ca workflow",
   "description": "One file, one action. An issue request is written by the hub Worker when an admin approves a certificate request in the admin panel (approved_by, approved_at; the ca workflow fetches it by its id, see README \"How a certificate is issued\"), or by the CA operator by hand. woltrust's `wol cert request` makes the part from format to requested_at (woltrust::request::Request); the Worker adds id, subject.org, verified_at and the approval. An origin request needs cla_accepted_at and no approval; a trusted one needs approved_by and approved_at. A revoke for reason abuse needs two distinct approvers (ADR 0046).",
   "oneOf": [

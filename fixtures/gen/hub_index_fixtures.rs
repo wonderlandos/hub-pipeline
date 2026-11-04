@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-//! The binary fixtures of hub-index. Run by `fixtures/gen/run.sh` as an example of the woltrust crate at the
+//! The binary fixtures of hub-pipeline (formerly hub-index). Run by `fixtures/gen/run.sh` as an example of the woltrust crate at the
 //! commit of `tools/woltrust.rev` (so it builds with that commit's own Cargo.lock and nothing else).
 //!
 //! - `assets/*`: real release files for `check-release.mjs` and the pinned `hubcheck`, in the formats hubcheck
