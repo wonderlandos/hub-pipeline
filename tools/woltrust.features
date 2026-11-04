@@ -2,5 +2,8 @@
 #   class            certificate bodies carry "class":"origin"|"trusted" and a trusted one "origin_cert"
 #   statements       `woltrust sign --purpose release` (label wolos/release/1): signed release statements
 #   withdrawn-version revocation entries with reason withdrawn-version (by statement serial)
-# fe64176 has none of them: the scripts keep the plumbing ready and leave these out of what they sign and publish.
+# 68b5a03 (trust phase 4) reads class/origin_cert and withdrawn-version; its command line has no --purpose release yet
+# (crypto::Purpose::Release exists, bin/woltrust.rs purpose() does not take it), so statements stay off.
 # Add a word here in the same commit that moves woltrust.rev to a commit that has it.
+class
+withdrawn-version
