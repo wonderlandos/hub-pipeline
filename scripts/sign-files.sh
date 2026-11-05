@@ -24,13 +24,18 @@
 #   WOLTRUST_BIN              the pinned woltrust (scripts/tool.sh woltrust), always: dry runs sign for real, with TEST keys
 #   WOLOS_INDEX_SIGNING_KEY   the Index intermediate's key material (plain, or a locked .wolkey), read by `woltrust sign --key-env`
 #   WOLOS_KEY_PASSPHRASE      the passphrase of a locked .wolkey (woltrust --passphrase-env; not read for a plain key)
-#   WOLOS_LEGACY_INDEX_KEY    PEM (PKCS#8) of the legacy Ed25519 index key
+#   WOLOS_LEGACY_INDEX_KEY    PEM (PKCS#8) of a separate legacy Ed25519 index key (optional). Unset or empty: index.json.sig
+#                             is made with the Ed25519 half of WOLOS_INDEX_SIGNING_KEY (scripts/legacy-key.mjs derive), which
+#                             must equal keys.ed25519 of the PUBLIC certificate <serial> in SIGN_INTERMEDIATES; WolOS trusts it
+#                             through /usr/share/wolos/keys/hub-index-2026.pub (legacy-key.mjs pub of that certificate)
 #   SIGN_ROOTS, SIGN_INTERMEDIATES  where the self-check finds the certificates (default certs/roots, certs/intermediates;
 #                             in a dry run fixtures/trust/): the signed files must verify in woltrust before they leave
 #   SIGN_PREVIOUS_RKDB        the last published revoked.rkdb (log/signed/revoked.rkdb); the new one follows it (serial + 1,
 #                             every old entry kept). Unset or missing: a first database, serial 1
 # DRY_RUN=1 signs with the TEST keys of scripts/test-keys.mjs (the TEST Index intermediate of woltrust, whose serial
 # must then be the one given); its output verifies only against the TEST root and must never be published.
+# SIGN_LEGACY=derive takes the legacy key from the Index key in a dry run too (the TEST Index intermediate's Ed25519 half);
+# without it a dry run uses the TEST legacy key (seed [1;32]), as fixtures/sample-signed was made.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 dir=${1:?usage: sign-files.sh <dir> <index-cert-serial>}
@@ -47,19 +52,27 @@ trap 'rm -rf "$scratch"' EXIT
 if [ "${DRY_RUN:-0}" = 1 ]; then
     node "$here/test-keys.mjs" "$scratch/keys"
     [ "$serial" = "$(cat "$scratch/keys/index.serial")" ] || { echo "sign-files: a dry run signs as the TEST Index intermediate $(cat "$scratch/keys/index.serial"), not $serial" >&2; exit 2; }
-    legacy_key=$scratch/keys/legacy.pem
     keyargs=(--key-file "$scratch/keys/index.key")
     roots=${SIGN_ROOTS:-$here/../fixtures/trust/roots} intermediates=${SIGN_INTERMEDIATES:-$here/../fixtures/trust/intermediates}
     verify_test=(--allow-test)
+    legacy=${SIGN_LEGACY:-test}
 else
     : "${WOLOS_INDEX_SIGNING_KEY:?WOLOS_INDEX_SIGNING_KEY is not set}"
-    : "${WOLOS_LEGACY_INDEX_KEY:?WOLOS_LEGACY_INDEX_KEY is not set}"
-    legacy_key=$scratch/legacy.pem
-    (umask 077 && printf '%s\n' "$WOLOS_LEGACY_INDEX_KEY" >"$legacy_key")
     keyargs=(--key-env WOLOS_INDEX_SIGNING_KEY --passphrase-env WOLOS_KEY_PASSPHRASE)
     roots=${SIGN_ROOTS:-$here/../certs/roots} intermediates=${SIGN_INTERMEDIATES:-$here/../certs/intermediates}
     verify_test=()
+    legacy=pem; [ -n "${WOLOS_LEGACY_INDEX_KEY:-}" ] || legacy=derive
 fi
+# The legacy Ed25519 key (index.json.sig): a separate PEM when one is given, else the Ed25519 half of the Index key itself.
+legacy_key=$scratch/legacy.pem
+case $legacy in
+test) cp "$scratch/keys/legacy.pem" "$legacy_key" ;;
+pem) (umask 077 && printf '%s\n' "$WOLOS_LEGACY_INDEX_KEY" >"$legacy_key") ;;
+derive)
+    node "$here/legacy-key.mjs" derive "${keyargs[@]}" --cert "$serial" --intermediates "$intermediates" --out "$legacy_key" ||
+        { echo "sign-files: no legacy index key: WOLOS_LEGACY_INDEX_KEY is not set and the Ed25519 half of the Index key could not be used (reason above)" >&2; exit 1; } ;;
+*) echo "sign-files: SIGN_LEGACY is derive (or unset)" >&2; exit 2 ;;
+esac
 
 # Release statements (statements.mjs), when build-index.mjs wrote their bodies: signed first: an index that points at
 # statements is not signed at all when they cannot be.
@@ -72,6 +85,7 @@ openssl pkeyutl -sign -inkey "$legacy_key" -rawin -in "$dir/index.json" -out "$d
 [ "$(wc -c <"$dir/index.json.sig")" -eq 64 ] || { echo "sign-files: the legacy signature is not 64 bytes" >&2; exit 1; }
 openssl pkey -in "$legacy_key" -pubout -out "$scratch/legacy.pub"
 openssl pkeyutl -verify -pubin -inkey "$scratch/legacy.pub" -rawin -in "$dir/index.json" -sigfile "$dir/index.json.sig" >/dev/null
+echo "sign-files: index.json.sig by the $legacy legacy key $(openssl pkey -pubin -in "$scratch/legacy.pub" -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n')" >&2
 
 # Hybrid, both halves, by the Index intermediate.
 "$WOLTRUST_BIN" sign --purpose index --cert "$serial" "${keyargs[@]}" "$dir/index.json" >"$dir/index.json.wsig"

@@ -23,7 +23,9 @@
 # Environment "sign" holds (names only, values live in the environment's secrets and never in git):
 #   secrets  WOLOS_INDEX_SIGNING_KEY    the Index intermediate's key material, for woltrust (plain or a locked .wolkey)
 #            WOLOS_KEY_PASSPHRASE       the passphrase of a locked .wolkey (woltrust --passphrase-env)
-#            WOLOS_LEGACY_INDEX_KEY     the legacy Ed25519 key of the 0.12 index (PEM, PKCS#8)
+#            WOLOS_LEGACY_INDEX_KEY     optional: a separate legacy Ed25519 key of the 0.12 index (PEM, PKCS#8). Unset (the case
+#                                       today): index.json.sig is signed by the Ed25519 half of WOLOS_INDEX_SIGNING_KEY
+#                                       (scripts/legacy-key.mjs), trusted by WolOS as /usr/share/wolos/keys/hub-index-2026.pub
 #            WOLOS_CDN_UPLOAD_TOKEN     the CDN upload token (cdn-put's UPLOAD_TOKEN)
 #            HUB_LOG_DEPLOY_KEY         this environment's write deploy key of wonderlandos/hub-log (ssh, private half)
 #   vars     INDEX_CERT_SERIAL          serial of the Index intermediate's certificate (16 hex)

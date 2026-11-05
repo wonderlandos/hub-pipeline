@@ -268,6 +268,28 @@ node -e 'const f=require("fs");const a=JSON.parse(f.readFileSync(process.argv[1]
 cp "$out/index.json" "$work/index2.json"; node "$here/build-index.mjs" --export "$work/export.checked.json" --revoked "$out/revoked.json" --revoked-url https://cdn.wolos.org/plugins/revoked.json --previous "$fx/previous-index.json" --out "$work/index2.json" >/dev/null
 cmp -s "$out/index.json" "$work/index2.json" && ok "the same export gives the same bytes" || bad "index not reproducible"
 node "$here/legacy-check.mjs" "$out/index.json" "$out/index.json.sig" "$(cat "$keys/legacy.pub.hex")" && ok "a 0.12 reader would verify and keep the entries" || bad "0.12 compatibility"
+# No separate legacy key (the sign environment has none): index.json.sig by the Ed25519 half of the Index key, which WolOS
+# trusts through a .pub made from the PUBLIC certificate alone (legacy-key.mjs; /usr/share/wolos/keys/hub-index-2026.pub)
+pubhex() { openssl pkey -pubin -in "$1" -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n'; }
+node "$here/legacy-key.mjs" pub "$trust/intermediates/test-index.wolcert" >"$work/test-index.pub" && pubhex "$work/test-index.pub" >"$work/test-index.pub.hex" \
+    && [ "$(cat "$work/test-index.pub")" = "$(openssl pkey -pubin -in "$work/test-index.pub")" ] && ok "legacy-key.mjs pub: the certificate's Ed25519 key as PEM SPKI (openssl pkey -pubout form)" || bad "legacy-key pub"
+mkdir -p "$work/derived"; cp "$out/index.json" "$out/revoked.json" "$work/derived/"
+DRY_RUN=1 SIGN_LEGACY=derive "$here/sign-files.sh" "$work/derived" "$INDEX_SERIAL" >/dev/null 2>"$work/derived.err" && grep -q "by the derive legacy key $(cat "$work/test-index.pub.hex")" "$work/derived.err" \
+    && node "$here/legacy-check.mjs" "$work/derived/index.json" "$work/derived/index.json.sig" "$(cat "$work/test-index.pub.hex")" \
+    && ! cmp -s "$work/derived/index.json.sig" "$out/index.json.sig" && cmp -s "$work/derived/index.json.wsig" "$out/index.json.wsig" \
+    && ok "SIGN_LEGACY=derive: index.json.sig by the Index key's Ed25519 half verifies in the 0.12 reader against the certificate's key; .wsig unchanged" || bad "derived legacy signature: $(cat "$work/derived.err")"
+sed 's/"serial": 42/"serial": 43/' "$work/derived/index.json" >"$work/tampered-derived.json"
+expect_fail "a changed index does not verify against the derived key" node "$here/legacy-check.mjs" "$work/tampered-derived.json" "$work/derived/index.json.sig" "$(cat "$work/test-index.pub.hex")"
+expect_fail "legacy-key.mjs derive refuses a key that is not the certificate's (the Authors key as the Index)" node "$here/legacy-key.mjs" derive --key-file "$keys/authors.key" --cert "$INDEX_SERIAL" --intermediates "$trust/intermediates" --out "$work/wrong.pem"
+expect_fail "legacy-key.mjs derive refuses a certificate it does not have" node "$here/legacy-key.mjs" derive --key-file "$keys/index.key" --cert 7e57000000000001 --intermediates "$trust/intermediates" --out "$work/none.pem"
+# a locked .wolkey opens as woltrust opens it (woltrust's own vector, crates/woltrust/vectors/wolkey/ring-made.wolkey, public test data)
+P="correct horse battery" "$WOLTRUST_BIN" public --key-file "$fx/woltrust-ring-made.wolkey" --passphrase-env P >"$work/ring.pub.json"
+node --input-type=module -e 'const m=await import(process.argv[1]);const fs=await import("node:fs");const c=await import("node:crypto");const s=m.openKey(fs.readFileSync(process.argv[2]),"0123456789abcdef","correct horse battery");const k=c.createPublicKey(m.ed25519Half(s)).export({format:"der",type:"spki"}).subarray(-32).toString("base64url");let wrong=false;try{m.openKey(fs.readFileSync(process.argv[2]),"0123456789abcdef","wrong horse battery")}catch{wrong=true}process.exit(k===JSON.parse(fs.readFileSync(process.argv[3])).ed25519&&wrong?0:1)' "file://$here/legacy-key.mjs" "$fx/woltrust-ring-made.wolkey" "$work/ring.pub.json" \
+    && ok "legacy-key.mjs opens a locked .wolkey (PBKDF2-SHA512, ChaCha20-Poly1305) to the Ed25519 key woltrust public prints; a wrong passphrase is refused" || bad "legacy-key .wolkey"
+# the real sign path with WOLOS_LEGACY_INDEX_KEY unset: the legacy signature is derived (the run then stops where it must, at the TEST root)
+mkdir -p "$work/prod"; cp "$out/index.json" "$out/revoked.json" "$work/prod/"
+if env -u WOLOS_LEGACY_INDEX_KEY DRY_RUN=0 WOLOS_INDEX_SIGNING_KEY="$(cat "$keys/index.key")" SIGN_ROOTS="$trust/roots" SIGN_INTERMEDIATES="$trust/intermediates" "$here/sign-files.sh" "$work/prod" "$INDEX_SERIAL" >/dev/null 2>"$work/prod.err"; then bad "a real sign run passed with the TEST root"
+else grep -q "by the derive legacy key $(cat "$work/test-index.pub.hex")" "$work/prod.err" && cmp -s "$work/prod/index.json.sig" "$work/derived/index.json.sig" && ok "a real sign run without WOLOS_LEGACY_INDEX_KEY signs index.json.sig with the Index key's Ed25519 half (then refuses the TEST root)" || bad "real run without legacy key: $(cat "$work/prod.err")"; fi
 mkdir -p "$work/prev"
 r=$(node "$here/needs-publish.mjs" --index "$out/index.json" --revoked "$out/revoked.json" --previous "$work/prev"); [[ $r == yes* ]] && ok "first publication: $r" || bad "needs-publish first: $r"
 cp "$out"/* "$work/prev/"
