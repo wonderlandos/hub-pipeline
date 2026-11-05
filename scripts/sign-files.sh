@@ -27,7 +27,7 @@
 #   WOLOS_LEGACY_INDEX_KEY    PEM (PKCS#8) of a separate legacy Ed25519 index key (optional). Unset or empty: index.json.sig
 #                             is made with the Ed25519 half of WOLOS_INDEX_SIGNING_KEY (scripts/legacy-key.mjs derive), which
 #                             must equal keys.ed25519 of the PUBLIC certificate <serial> in SIGN_INTERMEDIATES; WolOS trusts it
-#                             through /usr/share/wolos/keys/hub-index-2026.pub (legacy-key.mjs pub of that certificate)
+#                             through /usr/share/wolos/keys/hub/hub-index-2026.pub (legacy-key.mjs pub of that certificate)
 #   SIGN_ROOTS, SIGN_INTERMEDIATES  where the self-check finds the certificates (default certs/roots, certs/intermediates;
 #                             in a dry run fixtures/trust/): the signed files must verify in woltrust before they leave
 #   SIGN_PREVIOUS_RKDB        the last published revoked.rkdb (log/signed/revoked.rkdb); the new one follows it (serial + 1,

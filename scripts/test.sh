@@ -269,7 +269,7 @@ cp "$out/index.json" "$work/index2.json"; node "$here/build-index.mjs" --export 
 cmp -s "$out/index.json" "$work/index2.json" && ok "the same export gives the same bytes" || bad "index not reproducible"
 node "$here/legacy-check.mjs" "$out/index.json" "$out/index.json.sig" "$(cat "$keys/legacy.pub.hex")" && ok "a 0.12 reader would verify and keep the entries" || bad "0.12 compatibility"
 # No separate legacy key (the sign environment has none): index.json.sig by the Ed25519 half of the Index key, which WolOS
-# trusts through a .pub made from the PUBLIC certificate alone (legacy-key.mjs; /usr/share/wolos/keys/hub-index-2026.pub)
+# trusts through a .pub made from the PUBLIC certificate alone (legacy-key.mjs; /usr/share/wolos/keys/hub/hub-index-2026.pub)
 pubhex() { openssl pkey -pubin -in "$1" -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n'; }
 node "$here/legacy-key.mjs" pub "$trust/intermediates/test-index.wolcert" >"$work/test-index.pub" && pubhex "$work/test-index.pub" >"$work/test-index.pub.hex" \
     && [ "$(cat "$work/test-index.pub")" = "$(openssl pkey -pubin -in "$work/test-index.pub")" ] && ok "legacy-key.mjs pub: the certificate's Ed25519 key as PEM SPKI (openssl pkey -pubout form)" || bad "legacy-key pub"
