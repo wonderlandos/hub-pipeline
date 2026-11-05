@@ -5,12 +5,12 @@
   through a private header file, never on a command line. It is called by `scripts/publish.sh` in the `sign`
   environment only, with the secret `WOLOS_CDN_UPLOAD_TOKEN` as `UPLOAD_TOKEN`.
 - `hubcheck.rev`: the commit of `wonderlandos/hub` that `scripts/tool.sh hubcheck` builds `wasm/` `hubcheck` from
-  (`f2bce73`, HUB-wasm's native command; check workflow, test.sh). `a0fcf58` before it refused a package with
+  (`3af340f`, HUB-wasm's native command; check workflow, test.sh). `a0fcf58` before `f2bce73` refused a package with
   `screenshots/` members; `f2bce73` reads the listing from the package (report key `facts`) and has `hubcheck extract`,
-  which `check-release.mjs` uses for the icon and screenshots. It is the newest `wasm/` commit; it depends on
-  woltrust `0b00c1e` (classes and file certificates) and so does not know the 128-hex certificate ids or the two-root intermediates of `68b5a03`:
-  a hub commit that bumps `wasm/Cargo.toml` to woltrust `68b5a03` is needed before the check job can verify files
-  signed under the real roots (until then they come out as `community`, never as `pass` with a certificate).
+  which `check-release.mjs` uses for the icon and screenshots. `3af340f` (now) is `f2bce73` with its trust crate moved
+  from woltrust `0b00c1e` (on no branch since `wave3/trust-core` was rewritten) to `b8bbd2d`, the same woltrust as
+  `woltrust.rev`: trust phase 4, the 128-hex certificate ids and the two-root intermediates, so the check job can verify
+  files signed under the real roots.
 - `woltrust.rev`: the commit of `wonderlandos/wolos` that `scripts/tool.sh woltrust` builds `crates/woltrust` `woltrust` from
   (`b8bbd2d`, trust phase 4 on branch `wave3/trust-core`: SHA-512 certificate ids, both roots on intermediates, `rkdb`
   make/checkpoint/verify, emergency sections, class/origin_cert in certificate bodies; sign and ca workflows, test.sh).

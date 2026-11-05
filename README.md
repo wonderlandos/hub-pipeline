@@ -76,8 +76,8 @@ Clients read the CDN, not a repository: `https://cdn.wolos.org/plugins/{index.js
   (`GET /api/pipeline/requests/v-...`, schema `id`, `note`), appends it, and reports `POST /api/pipeline/revocations
   {request_id, serial}` (`api.mjs revoked`). Issue requests for trusted carry `origin_cert`, checked against the subject's active
   origin certificate.
-- hubcheck is at `f2bce73` (the newest `wasm/` commit of `wonderlandos/hub`, built on woltrust `0b00c1e`; `a0fcf58` before it blocked `screenshots/` members and had no listing facts): it does not read
-  128-hex ids or two-root intermediates, so files signed under the real roots come out `community` until hub bumps woltrust.
+- hubcheck is at `3af340f` (`wonderlandos/hub` `wasm/`: `f2bce73`'s listing facts and `hubcheck extract`, built on woltrust `b8bbd2d`, the same
+  trust phase 4 as `tools/woltrust.rev`): it reads 128-hex ids and two-root intermediates, so files signed under the real roots verify.
 
 ## How a release gets listed
 
@@ -253,7 +253,7 @@ Both tools are built from the commit in `tools/<name>.rev` by `scripts/tool.sh <
 --locked`; the binary is cached in `~/.cache/hub-pipeline-tools/<name>-<rev>/bin`, in actions/cache for `ci.yml` and the scan job, never for the
 jobs that hold secrets). There are no stand-ins: dry runs and `scripts/test.sh` run the same binaries with the TEST authority.
 
-`hubcheck` (HUB-wasm, `wonderlandos/hub` `wasm/`, `tools/hubcheck.rev` = `f2bce73`, `tools/hubcheck.sha256` the binary built here; zstd plugins and extensions are read by default), called by `check-release.mjs`:
+`hubcheck` (HUB-wasm, `wonderlandos/hub` `wasm/`, `tools/hubcheck.rev` = `3af340f`, `tools/hubcheck.sha256` the binary built here; zstd plugins and extensions are read by default), called by `check-release.mjs`:
 `hubcheck inspect app|plugin|extension FILE --store store.json --now UNIX [--first-seen UNIX]` prints one line of I7 JSON,
 `{"verdict":"pass|flag|block|not-checked","findings":[{"rule","sentence","evidence"}],"trust":"wolos|trusted|origin|verified|community|withdrawn|invalid","cert"?:{"serial","subject","level"},"origin"?,"file"?:{"id","version"?},"facts"?:{"name","summary","description"?,"icon"?,"screenshots","categories","homepage"?,"licence"?}}`,
 exit 0 whenever it printed a report. The verdict is hubcheck's; `check-release.mjs` adds only what hubcheck cannot know (download, the size
