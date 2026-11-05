@@ -277,7 +277,7 @@ from the name (wolos-cdn `bucket.rs` `serve`, tower-http `ServeFile`: `.png` ima
 parts as `application/octet-stream` and has no type of its own), and `publish.sh` reads each picture back and stops, before `index.json`
 goes up, when it is served with another type (`scripts/mock-cdn.mjs` stands in for the CDN in `test.sh`).
 
-`woltrust` (the woltrust crate of wolos, `src/bin/woltrust.rs`, `tools/woltrust.rev` = `68b5a03`, `tools/woltrust.sha256`, branch `wave3/trust-core`):
+`woltrust` (the woltrust crate of wolos, `src/bin/woltrust.rs`, `tools/woltrust.rev` = `b8bbd2d` (the rewritten `68b5a03`, same woltrust), `tools/woltrust.sha256`, branch `wave3/trust-core`):
 - `woltrust sign --purpose index|revocation --cert SERIAL --key-env NAME --passphrase-env WOLOS_KEY_PASSPHRASE FILE` prints the `.wsig`
   (`{"cert","ed25519","second"}`) over `label || 0x00 || SHA-512(FILE)` (`sign-files.sh`);
 - `woltrust verify --purpose P --wsig F --roots DIR --intermediates DIR --list revoked.json [--chain F] [--id ID] [--allow-test] [--now N] FILE`

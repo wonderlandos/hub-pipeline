@@ -12,13 +12,17 @@
   a hub commit that bumps `wasm/Cargo.toml` to woltrust `68b5a03` is needed before the check job can verify files
   signed under the real roots (until then they come out as `community`, never as `pass` with a certificate).
 - `woltrust.rev`: the commit of `wonderlandos/wolos` that `scripts/tool.sh woltrust` builds `crates/woltrust` `woltrust` from
-  (`68b5a03`, trust phase 4, branch `wave3/trust-core`: SHA-512 certificate ids, both roots on intermediates, `rkdb`
+  (`b8bbd2d`, trust phase 4 on branch `wave3/trust-core`: SHA-512 certificate ids, both roots on intermediates, `rkdb`
   make/checkpoint/verify, emergency sections, class/origin_cert in certificate bodies; sign and ca workflows, test.sh).
+  It replaces `68b5a03`, the same commit before `wave3/trust-core` was rewritten (only the `crates/shell` and `design`
+  submodule pointers differ; the binary built here has the same sha256): `68b5a03` is on no branch any more, so a fresh
+  clone does not have it and sign.yml could not build it.
 - `woltrust.sha256`, `hubcheck.sha256`: sha256 of the binaries `tool.sh` built from those commits here (rustc 1.99.1,
   x86_64 Linux). `tool.sh` compares and warns when a build differs (another rustc gives other bytes);
   `TOOL_SHA256_STRICT=1` turns the warning into a refusal. Remake them with `sha256sum` after moving a `.rev`.
 
-A `.rev` file holds one line, a 40-digit commit id, or the word `unpinned` (tool.sh then builds nothing and exits 3). To move a
+A `.rev` file holds one line, a 40-digit commit id, or the word `unpinned` (tool.sh then builds nothing and exits 3). The commit
+must be reachable from a branch or tag of its public repository: `scripts/pins-reachable.sh` checks it (ci.yml). To move a
 tool: put the new commit id in its `.rev`, run `scripts/test.sh` (and `fixtures/gen/run.sh` plus
 `SAMPLE_OUT=fixtures/sample-signed scripts/test.sh` if the formats changed), write the new `.sha256`, update
 `tools/woltrust.features`, commit together.

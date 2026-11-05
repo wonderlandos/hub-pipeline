@@ -30,6 +30,10 @@ jobs:
           persist-credentials: false
       - name: The schema here is the one hub-log publishes
         run: scripts/schema-sync.sh log
+      # tool.sh builds from a plain clone, which only has reachable commits; the cache below would hide a pin on a
+      # rewritten branch until sign.yml (which always builds afresh) fails.
+      - name: Every pinned tool commit is on a branch of its repository
+        run: scripts/pins-reachable.sh
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/hub-pipeline-tools
