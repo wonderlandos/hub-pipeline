@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-# sign: build the index from the Worker's export, sign it with the Index intermediate, commit the published files to
-# signed/ of the public log, wonderlandos/hub-log (ADR 0047, ADR 0046), then upload them (only with an upload token).
-# This is the only workflow that holds the signing keys and the upload token, and it parses no release file: it reads
-# the Worker's JSON, checks it against schema/index.schema.json and checks each new entry against GitHub itself.
+# sign: build the index from the Worker's export, sign it with the Index intermediate, upload it, and commit the
+# published files to signed/ of the public log, wonderlandos/hub-log (ADR 0047, ADR 0046). This is the only workflow
+# that holds the signing keys and the upload token, and it parses no release file: it reads the Worker's JSON, checks it
+# against schema/index.schema.json and checks each new entry against GitHub itself.
 #
 # Beside index.json (+ .sig, .wsig) and revoked.json (+ .wsig) it publishes (trust phase 4, woltrust 68b5a03):
 #   revoked.rkdb              the revocation database, chained to the last one in log/signed/ (serial + 1, no entry lost)
@@ -26,8 +26,7 @@
 #            WOLOS_LEGACY_INDEX_KEY     optional: a separate legacy Ed25519 key of the 0.12 index (PEM, PKCS#8). Unset (the case
 #                                       today): index.json.sig is signed by the Ed25519 half of WOLOS_INDEX_SIGNING_KEY
 #                                       (scripts/legacy-key.mjs), trusted by WolOS as /usr/share/wolos/keys/hub-index-2026.pub
-#            WOLOS_CDN_UPLOAD_TOKEN     optional: the CDN upload token (cdn-put's UPLOAD_TOKEN). Unset (the case today): the
-#                                       upload step is skipped and the hub-log mirror uploads signed/ to the CDN
+#            WOLOS_CDN_UPLOAD_TOKEN     the CDN upload token (cdn-put's UPLOAD_TOKEN)
 #            HUB_LOG_DEPLOY_KEY         this environment's write deploy key of wonderlandos/hub-log (ssh, private half)
 #   vars     INDEX_CERT_SERIAL          serial of the Index intermediate's certificate (16 hex)
 #            CDN_BASE (optional)        the upload server, if not cdn-put's own default
@@ -177,6 +176,12 @@ jobs:
           else export SIGN_ROOTS=log/certs/roots SIGN_INTERMEDIATES=log/certs/intermediates SIGN_PREVIOUS_RKDB=log/signed/revoked.rkdb; fi
           scripts/sign-files.sh work/out "${CERT:?the variable INDEX_CERT_SERIAL is not set in the sign environment}"
 
+      - name: Upload to the CDN
+        if: steps.need.outputs.publish == 'yes'
+        env:
+          WOLOS_CDN_UPLOAD_TOKEN: ${{ secrets.WOLOS_CDN_UPLOAD_TOKEN }}
+        run: scripts/publish.sh work/out
+
       - name: Commit the published files to hub-log signed/
         if: steps.need.outputs.publish == 'yes' && env.DRY_RUN != '1'
         run: |
@@ -189,25 +194,6 @@ jobs:
           serial=$(node -p 'require("./log/signed/index.json").serial')
           counts=$(node -p 'const i=require("./log/signed/index.json");i.apps.length+" apps, "+i.plugins.length+" plugins, "+i.extensions.length+" extensions"')
           scripts/commit-log.sh "index $serial: $counts; revoked $(node -p 'require("./log/signed/revoked.json").serial'), rkdb $(node -p 'require("./log/signed/revoked.checkpoint.json").serial')" signed revoked.checkpoint.json
-
-      # The upload comes after the commit: hub-log signed/ is the record, and a box outside this job mirrors it to the CDN
-      # (s3://wolos-repo/plugins/, the wolos repo's .claude/bin/hub-cdn-sync.sh) when this environment has no upload token.
-      # `if:` cannot read secrets, so a step says whether the token is set (its value never leaves the env).
-      - name: Is there a CDN upload token
-        id: cdn
-        if: steps.need.outputs.publish == 'yes' && env.DRY_RUN != '1'
-        env:
-          WOLOS_CDN_UPLOAD_TOKEN: ${{ secrets.WOLOS_CDN_UPLOAD_TOKEN }}
-        run: |
-          if [ -n "$WOLOS_CDN_UPLOAD_TOKEN" ]; then echo "token=yes" >> "$GITHUB_OUTPUT"
-          else echo "token=no" >> "$GITHUB_OUTPUT"; echo "CDN upload left to the hub-log mirror"; fi
-
-      - name: Upload to the CDN
-        # A dry run always prints its plan (publish.sh DRY_RUN=1 uploads nothing and needs no token).
-        if: steps.need.outputs.publish == 'yes' && (env.DRY_RUN == '1' || steps.cdn.outputs.token == 'yes')
-        env:
-          WOLOS_CDN_UPLOAD_TOKEN: ${{ secrets.WOLOS_CDN_UPLOAD_TOKEN }}
-        run: scripts/publish.sh work/out
 
       - name: Keep the dry run
         if: always() && env.DRY_RUN == '1'
